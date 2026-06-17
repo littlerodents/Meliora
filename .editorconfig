@@ -1,0 +1,38 @@
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.{js,ts,vue,mjs,cjs}]
+indent_style = space
+indent_size = 2
+
+[*.{md,yml,yaml,json}]
+indent_style = space
+indent_size = 2
+
+[*.scss]
+indent_style = space
+indent_size = 2
+
+[*.html]
+indent_style = space
+indent_size = 2
+
+[*.{txt,log}]
+indent_style = space
+indent_size = 2
+
+[{package.json,tsconfig*.json}]
+indent_style = space
+indent_size = 2
+
+[Makefile]
+indent_style = tab
+
+[*.md]
+max_line_length = 100
+trim_trailing_whitespace = false

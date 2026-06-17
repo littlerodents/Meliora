@@ -1,109 +1,119 @@
+<div align="center">
+
+<img src="public/pwa-icon.svg" alt="Meliora" width="100" height="100" />
+
 # Meliora
 
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2Fabloom25%2FMeliora)
+**沉浸式 · 视听一体的网页音乐播放器**
 
-基于 Vue 3、TypeScript、Pinia 和 SCSS 的沉浸式单页音乐播放器。所有远程歌单和本地音乐会合并为一个匿名曲库，页面不会显示歌单名称、平台或来源。
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg?style=flat-square)](LICENSE)
+[![Vue 3](https://img.shields.io/badge/Vue-3-42b883?style=flat-square&logo=vue.js&logoColor=white)](https://vuejs.org/)
+[![PWA](https://img.shields.io/badge/PWA-Ready-5a0fc8?style=flat-square&logo=pwa&logoColor=white)](https://web.dev/progressive-web-apps/)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg?style=flat-square)](CONTRIBUTING.md)
 
-## 开发
+[在线预览](https://music.abloom.site) · [反馈问题](https://github.com/abloom25/Meliora/issues) · [贡献指南](CONTRIBUTING.md)
+
+</div>
+
+---
+
+## ✨ 特性
+
+- 🎨 **视听一体**:实时节拍分析驱动背景呼吸,封面取色驱动主题色
+- 🎵 **零延迟切歌**:三 Audio 池 + 预加载槽 + 650ms 交叉淡化
+- 📜 **歌词跟随**:LRC 解析 + FLIP 牵引滚动 + Document Picture-in-Picture 小窗
+- 📱 **类原生体验**:PWA 安装、MediaSession 锁屏控制、移动端触感反馈
+- 🌐 **匿名曲库**:远程歌单(网易云 / QQ 音乐) + 本地音乐自动合并去重
+- ♿ **无障碍**:`prefers-reduced-motion`、focus trap、键盘可达
+
+## 🚀 快速开始
 
 ```powershell
 pnpm install
 pnpm dev
 ```
 
-质量检查：
+需要 Node 20+ 与 pnpm 8+。
 
-```powershell
-pnpm test
-pnpm type-check
-pnpm lint
-pnpm build
-```
+## ⚙️ 配置
 
-## 配置远程歌单
-
-编辑 `src/config/music.ts`：
+编辑 [src/config/music.ts](src/config/music.ts):
 
 ```ts
 export const musicConfig: MusicConfig = {
   siteName: 'Meliora',
   apiEndpoint: 'https://api.music.abloom.site/api',
   playlists: [
+    { server: 'netease', playlistId: '17390341309', enabled: true },
+    { server: 'tencent', playlistId: '...', enabled: true },
+  ],
+  localTracks: [
     {
-      server: 'netease',
-      playlistId: '17390341309',
-      enabled: true,
-    },
-    {
-      server: 'tencent',
-      playlistId: '另一个歌单 ID',
-      enabled: true,
+      id: 'example',
+      title: 'Example Song',
+      artist: 'Example Artist',
+      audio: '/music/example.mp3',
+      cover: '/covers/example.jpg', // 可选
+      lyrics: '/lyrics/example.lrc', // 可选
     },
   ],
-  localTracks: [],
 }
 ```
 
-支持 `netease` 和 `tencent`。多个歌单会按配置顺序合并，重复歌曲按规范化后的“歌名 + 歌手”去重。
+本地资源直接放进 `public/`。歌词支持标准 LRC 与 `[00:00.00-1]` 扩展标签。
 
-## 配置本地音乐
+## ⌨️ 快捷键
 
-将文件放入 `public`，例如：
+| 快捷键        | 操作             |
+| ------------- | ---------------- |
+| `Space`       | 播放 / 暂停      |
+| `←` / `→`     | 后退 / 快进 5 秒 |
+| `Shift + ←/→` | 上一曲 / 下一曲  |
+| `L`           | 切换歌词         |
+| `Esc`         | 关闭抽屉 / 弹层  |
 
-```text
-public/
-  music/example.mp3
-  covers/example.jpg
-  lyrics/example.lrc
-```
+输入框中自动让出快捷键。
 
-然后添加配置：
+## 🌍 部署
 
-```ts
-localTracks: [
-  {
-    id: 'example',
-    title: 'Example Song',
-    artist: 'Example Artist',
-    album: 'Example Album',
-    audio: '/music/example.mp3',
-    cover: '/covers/example.jpg',
-    lyrics: '/lyrics/example.lrc',
-  },
-],
-```
+| 平台                 | 配置文件                                               | 一键部署                                                                                                                                        |
+| -------------------- | ------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Vercel**           | [vercel.json](vercel.json)                             | [![Deploy](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2Fabloom25%2FMeliora)               |
+| **Netlify**          | [netlify.toml](netlify.toml)                           | [![Deploy](https://www.netlify.com/img/deploy/button.svg)](https://app.netlify.com/start/deploy?repository=https://github.com/abloom25/Meliora) |
+| **Cloudflare Pages** | [wrangler.toml](wrangler.toml)                         | 控制台导入或 `wrangler pages deploy dist`                                                                                                       |
+| **GitHub Pages**     | [deploy-pages.yml](.github/workflows/deploy-pages.yml) | 推送到 `main` 自动部署                                                                                                                          |
 
-`audio` 必填，封面、专辑和歌词可选。歌词支持标准 LRC 时间标签以及 `[00:00.00-1]` 这类带序号的扩展标签；纯文本歌词也可展示，但不能按时间跳转。
+所有平台都已配置好安全头、Service Worker 缓存策略和 SPA fallback。构建命令统一为 `pnpm build`,输出 `dist`。
 
-只有制作信息和“纯音乐，请欣赏”等占位内容时，播放器会自动隐藏歌词并居中显示歌曲信息。右上角歌词按钮可以随时开关可用歌词。
-
-## 构建
+## 🛠️ 开发
 
 ```powershell
-pnpm build
-pnpm preview
+pnpm dev          # 开发服务器
+pnpm test         # 单元测试
+pnpm type-check   # 类型检查
+pnpm lint         # ESLint
+pnpm format       # Prettier
+pnpm build        # 生产构建
 ```
 
-构建结果位于 `dist`，可以部署到任意静态站点服务。
+提交时 Husky 会自动跑 `lint-staged` 与 `commitlint`。提交信息遵循 [Conventional Commits](https://www.conventionalcommits.org/)。
 
-## GitHub Pages 自动部署
+## 🤝 贡献
 
-仓库已经包含 `.github/workflows/deploy-pages.yml`。推送到 `main` 后，GitHub Actions 会依次执行测试、类型检查、lint 和构建，通过后发布到 GitHub Pages。
+欢迎一切形式的贡献。详情请看 [CONTRIBUTING.md](CONTRIBUTING.md);代码风格与设计规范请看 [agent.md](agent.md)。
 
-首次使用时，在 GitHub 仓库中打开 `Settings > Pages`，将 `Source` 设置为 `GitHub Actions`。之后每次推送到 `main` 都会自动更新站点，也可以在 Actions 页面手动运行工作流。
+## 📄 开源许可
 
-Vite 使用相对资源路径，因此普通项目仓库和 `username.github.io` 仓库都可以直接部署。
+[GNU Affero General Public License v3.0 or later](LICENSE) © abloom25
 
-## Vercel 自动部署
+> AGPL-3.0 要求任何**修改后部署到公网**的衍生版本必须向用户提供完整源代码。如需闭源商业使用,请联系作者协商授权。
 
-点击顶部的 `Deploy with Vercel` 按钮即可一键克隆并部署到自己的 Vercel 账号。
+---
 
-仓库已经包含 `vercel.json`。在 Vercel 中选择 `Add New > Project` 并导入此 GitHub 仓库，无需修改构建参数：
+<div align="center">
 
-```text
-Install Command: pnpm install --frozen-lockfile
-Build Command: pnpm build
-Output Directory: dist
-```
+如果这个项目对你有帮助,欢迎点亮 ⭐ Star
 
-Vercel 与 GitHub 连接后，推送到生产分支会自动生产部署，其他分支和 Pull Request 会自动生成 Preview Deployment。
+Made with ❤️ by [abloom25](https://github.com/abloom25)
+
+</div>

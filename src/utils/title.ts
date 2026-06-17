@@ -1,10 +1,16 @@
+import { LruCache } from './lru-cache'
+
 export interface DisplayTitle {
   title: string
   versions: string[]
   version?: string
 }
 
+const titleCache = new LruCache<string, DisplayTitle>(256)
+
 export function splitDisplayTitle(rawTitle: string): DisplayTitle {
+  if (titleCache.has(rawTitle)) return titleCache.get(rawTitle)!
+
   let title = rawTitle.trim()
   const versions: string[] = []
 
@@ -37,9 +43,11 @@ export function splitDisplayTitle(rawTitle: string): DisplayTitle {
     title = mainTitle
   }
 
-  return {
+  const result: DisplayTitle = {
     title,
     versions,
     version: versions[0],
   }
+  titleCache.set(rawTitle, result)
+  return result
 }

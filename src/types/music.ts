@@ -69,4 +69,5 @@ export interface PlayerSettings {
   lyricAnimation: boolean
   skipOnError: boolean
   autoHideChrome: boolean
+  settingsVersion: number
 }

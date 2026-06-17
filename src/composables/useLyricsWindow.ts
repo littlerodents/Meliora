@@ -7,8 +7,17 @@ interface DocumentPictureInPictureApi {
 
 interface LyricsWindowOptions {
   currentTrack: Ref<Track | null>
-  currentTime: Ref<number>
   isPlaying: Ref<boolean>
+}
+
+interface CachedNodes {
+  cover: HTMLImageElement
+  title: HTMLElement
+  artist: HTMLElement
+  background: HTMLElement
+  lyricsContainer: HTMLElement
+  lineNodes: HTMLDivElement[]
+  translationNodes: (HTMLSpanElement | null)[]
 }
 
 const popupStyles = `
@@ -31,11 +40,7 @@ const popupStyles = `
   .state { margin: auto 0; color: rgba(255,255,255,.5); font-size: 18px; font-weight: 620; }
 `
 
-export function useLyricsWindow({
-  currentTrack,
-  currentTime,
-  isPlaying,
-}: LyricsWindowOptions) {
+export function useLyricsWindow({ currentTrack, isPlaying }: LyricsWindowOptions) {
   const snapshot = ref<LyricsSnapshot>({
     lines: [],
     activeIndex: -1,
@@ -43,68 +48,183 @@ export function useLyricsWindow({
   })
   const isOpen = ref(false)
   let lyricsWindow: Window | null = null
+  let cachedNodes: CachedNodes | null = null
+  let lastRenderedTrackId: string | null = null
+  let lastRenderedIsPlaying: boolean | null = null
+  let lastRenderedNoTrack = false
 
   function setSnapshot(value: LyricsSnapshot) {
     snapshot.value = value
     render()
   }
 
+  function clearCache() {
+    cachedNodes = null
+    lastRenderedTrackId = null
+    lastRenderedIsPlaying = null
+    lastRenderedNoTrack = false
+  }
+
   function createDocument(target: Window) {
-    target.document.open()
-    target.document.write(`<!doctype html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Meliora 歌词</title><style>${popupStyles}</style></head><body><div class="background"></div><div class="shade"></div><main><header><img class="cover" alt=""><div class="copy"><h1></h1><p></p></div></header><section class="lyrics"></section></main></body></html>`)
-    target.document.close()
+    const parser = new DOMParser()
+    const doc = parser.parseFromString(
+      `<!doctype html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Meliora 歌词</title><style>${popupStyles}</style></head><body><div class="background"></div><div class="shade"></div><main><header><img class="cover" alt=""><div class="copy"><h1></h1><p></p></div></header><section class="lyrics"></section></main></body></html>`,
+      'text/html',
+    )
+    target.document.replaceChildren(doc.documentElement)
+
+    const cover = target.document.querySelector<HTMLImageElement>('.cover')
+    const title = target.document.querySelector<HTMLElement>('h1')
+    const artist = target.document.querySelector<HTMLElement>('header p')
+    const background = target.document.querySelector<HTMLElement>('.background')
+    const lyricsContainer = target.document.querySelector<HTMLElement>('.lyrics')
+
+    if (cover && title && artist && background && lyricsContainer) {
+      cachedNodes = {
+        cover,
+        title,
+        artist,
+        background,
+        lyricsContainer,
+        lineNodes: [],
+        translationNodes: [],
+      }
+    } else {
+      cachedNodes = null
+    }
+    lastRenderedTrackId = null
+    lastRenderedIsPlaying = null
+    lastRenderedNoTrack = false
+
     target.addEventListener('pagehide', () => {
       if (lyricsWindow === target) {
         lyricsWindow = null
         isOpen.value = false
+        clearCache()
       }
     })
+  }
+
+  function ensureLineNode(index: number, doc: Document): HTMLDivElement {
+    const nodes = cachedNodes!
+    let node = nodes.lineNodes[index]
+    if (!node) {
+      node = doc.createElement('div')
+      nodes.lineNodes[index] = node
+      nodes.translationNodes[index] = null
+    }
+    return node
   }
 
   function render() {
     const target = lyricsWindow
     if (!target || target.closed) {
-      if (lyricsWindow) isOpen.value = false
+      if (lyricsWindow) {
+        isOpen.value = false
+        clearCache()
+      }
       return
     }
 
-    const document = target.document
+    if (!cachedNodes) return
+
+    const doc = target.document
     const track = currentTrack.value
-    const cover = document.querySelector<HTMLImageElement>('.cover')
-    const title = document.querySelector<HTMLElement>('h1')
-    const artist = document.querySelector<HTMLElement>('header p')
-    const background = document.querySelector<HTMLElement>('.background')
-    const lyrics = document.querySelector<HTMLElement>('.lyrics')
-    if (!cover || !title || !artist || !background || !lyrics) return
+    const { cover, title, artist, background, lyricsContainer, lineNodes } = cachedNodes
 
-    title.textContent = track?.title || 'Meliora'
-    artist.textContent = track?.artist || (isPlaying.value ? '正在播放' : '已暂停')
-    cover.src = track?.cover || new URL('favicon.svg', window.location.href).href
-    background.style.backgroundImage = track?.cover ? `url("${track.cover.replaceAll('"', '\\"')}")` : 'none'
-    lyrics.replaceChildren()
+    const trackId = track?.id ?? null
+    const trackChanged =
+      trackId !== lastRenderedTrackId ||
+      (track === null && !lastRenderedNoTrack) ||
+      (track !== null && lastRenderedNoTrack)
 
-    if (snapshot.value.status !== 'ready' || !snapshot.value.lines.length) {
+    if (trackChanged) {
+      title.textContent = track?.title || 'Meliora'
+      cover.src = track?.cover || new URL('favicon.svg', window.location.href).href
+      background.style.backgroundImage = track?.cover
+        ? `url("${track.cover.replaceAll('"', '\\"')}")`
+        : 'none'
+      lastRenderedTrackId = trackId
+      lastRenderedNoTrack = track === null
+      lastRenderedIsPlaying = null
+    }
+
+    if (track) {
+      if (track.artist !== artist.textContent) {
+        artist.textContent = track.artist || ''
+      }
+    } else if (lastRenderedIsPlaying !== isPlaying.value) {
+      artist.textContent = isPlaying.value ? '正在播放' : '已暂停'
+      lastRenderedIsPlaying = isPlaying.value
+    }
+
+    const lines = snapshot.value.lines
+    const ready = snapshot.value.status === 'ready' && lines.length > 0
+
+    if (!ready) {
+      for (let i = 0; i < lineNodes.length; i += 1) {
+        const node = lineNodes[i]
+        if (node && node.parentNode) node.remove()
+      }
       return
     }
 
     const active = Math.max(0, snapshot.value.activeIndex)
     const start = Math.max(0, active - 1)
-    const end = Math.min(snapshot.value.lines.length, active + 3)
-    snapshot.value.lines.slice(start, end).forEach((line, offset) => {
-      const index = start + offset
-      const element = document.createElement('div')
-      element.className = `line ${index === active ? 'active' : index < active ? 'before' : 'after'}`
-      element.dataset.index = String(index)
-      element.textContent = line.text
-      if (line.translation) {
-        const translation = document.createElement('span')
-        translation.className = 'translation'
-        translation.textContent = line.translation
-        element.append(translation)
-      }
-      lyrics.append(element)
-    })
+    const end = Math.min(lines.length, active + 3)
+    const visibleCount = end - start
 
+    for (let slot = 0; slot < visibleCount; slot += 1) {
+      const lineIndex = start + slot
+      const line = lines[lineIndex]!
+      const node = ensureLineNode(slot, doc)
+
+      const desiredClass = `line ${lineIndex === active ? 'active' : lineIndex < active ? 'before' : 'after'}`
+      if (node.className !== desiredClass) node.className = desiredClass
+      const indexStr = String(lineIndex)
+      if (node.dataset.index !== indexStr) node.dataset.index = indexStr
+
+      let translationNode = cachedNodes.translationNodes[slot]
+      if (line.translation) {
+        if (!translationNode) {
+          translationNode = doc.createElement('span')
+          translationNode.className = 'translation'
+          cachedNodes.translationNodes[slot] = translationNode
+        }
+        if (node.firstChild !== node.lastChild || node.firstChild?.nodeType !== Node.TEXT_NODE) {
+          node.textContent = line.text
+        } else if (node.firstChild.nodeValue !== line.text) {
+          node.firstChild.nodeValue = line.text
+        }
+        if (translationNode.textContent !== line.translation) {
+          translationNode.textContent = line.translation
+        }
+        if (translationNode.parentNode !== node) {
+          node.append(translationNode)
+        }
+      } else {
+        if (translationNode && translationNode.parentNode) {
+          translationNode.remove()
+        }
+        if (node.textContent !== line.text) {
+          node.textContent = line.text
+        }
+      }
+
+      if (node.parentNode !== lyricsContainer) {
+        lyricsContainer.append(node)
+      } else {
+        const expectedNode = lyricsContainer.children[slot]
+        if (expectedNode !== node) {
+          lyricsContainer.insertBefore(node, expectedNode ?? null)
+        }
+      }
+    }
+
+    for (let slot = visibleCount; slot < lineNodes.length; slot += 1) {
+      const node = lineNodes[slot]
+      if (node && node.parentNode) node.remove()
+    }
   }
 
   async function toggleLyricsWindow() {
@@ -112,6 +232,7 @@ export function useLyricsWindow({
       lyricsWindow.close()
       lyricsWindow = null
       isOpen.value = false
+      clearCache()
       return
     }
 
@@ -129,8 +250,11 @@ export function useLyricsWindow({
     render()
   }
 
-  watch([currentTrack, currentTime, isPlaying], render)
-  onBeforeUnmount(() => lyricsWindow?.close())
+  watch([currentTrack, isPlaying], render)
+  onBeforeUnmount(() => {
+    lyricsWindow?.close()
+    clearCache()
+  })
 
   return { isOpen, setSnapshot, toggleLyricsWindow }
 }

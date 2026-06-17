@@ -1,11 +1,12 @@
-/* global self, caches, fetch, URL */
+/* global self, caches, fetch, URL, Response */
 
-const CACHE_NAME = 'meliora-shell-v2'
+const CACHE_NAME = '__SW_CACHE_NAME__'
 const APP_SHELL = ['./', './manifest.webmanifest', './favicon.svg', './pwa-icon.svg']
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
-    caches.open(CACHE_NAME)
+    caches
+      .open(CACHE_NAME)
       .then((cache) => cache.addAll(APP_SHELL))
       .then(() => self.skipWaiting()),
   )
@@ -13,15 +14,21 @@ self.addEventListener('install', (event) => {
 
 self.addEventListener('activate', (event) => {
   event.waitUntil(
-    caches.keys()
-      .then((keys) => Promise.all(
-        keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key)),
-      ))
+    caches
+      .keys()
+      .then((keys) =>
+        Promise.all(keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key))),
+      )
       .then(() => self.clients.claim()),
   )
 })
 
 self.addEventListener('fetch', (event) => {
+  // 对带 Range 头的请求（通常用于音视频分段加载）直接放行，避免 SW 缓存层破坏 206 响应
+  if (event.request.headers.has('range')) return
+  // 对音频与视频资源直接放行，交由浏览器默认处理，确保流式与 seek 行为正常
+  if (event.request.destination === 'audio' || event.request.destination === 'video') return
+
   if (event.request.method !== 'GET') return
   const requestUrl = new URL(event.request.url)
   if (requestUrl.origin !== self.location.origin) return
@@ -48,7 +55,14 @@ self.addEventListener('fetch', (event) => {
         }
         return response
       })
-      return cached || network
+      return (
+        cached ||
+        network.catch(() =>
+          caches
+            .match(event.request)
+            .then((res) => res || new Response('', { status: 504, statusText: 'Gateway Timeout' })),
+        )
+      )
     }),
   )
 })

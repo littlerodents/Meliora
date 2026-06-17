@@ -1,3 +1,5 @@
+import { LruCache } from './lru-cache'
+
 export interface ThemeColor {
   accent: string
   accentSoft: string
@@ -10,8 +12,8 @@ interface RGB {
   b: number
 }
 
-const themeCache = new Map<string, ThemeColor | null>()
-const PALETTE_BUCKET_SIZE = 28
+const themeCache = new LruCache<string, ThemeColor | null>(64)
+const PALETTE_BUCKET_SIZE = 24
 
 function rgbToHsl({ r, g, b }: RGB) {
   const red = r / 255
@@ -59,10 +61,15 @@ function hslToRgb(hue: number, saturation: number, lightness: number): RGB {
 }
 
 export function createThemeColor(color: RGB): ThemeColor {
-  const { hue, saturation } = rgbToHsl(color)
-  const resolvedSaturation = Math.max(0.32, Math.min(0.56, saturation * 0.82))
-  const accent = hslToRgb(hue, resolvedSaturation, 0.62)
-  const soft = hslToRgb(hue, Math.max(0.24, resolvedSaturation * 0.68), 0.75)
+  const { hue, saturation, lightness } = rgbToHsl(color)
+  const resolvedSaturation = Math.max(0.28, Math.min(0.52, saturation * 0.76 + 0.08))
+  const resolvedLightness = Math.max(0.54, Math.min(0.66, 0.6 + (0.48 - lightness) * 0.16))
+  const accent = hslToRgb(hue, resolvedSaturation, resolvedLightness)
+  const soft = hslToRgb(
+    hue,
+    Math.max(0.2, resolvedSaturation * 0.62),
+    Math.min(0.78, resolvedLightness + 0.13),
+  )
   return {
     accent: `rgb(${accent.r} ${accent.g} ${accent.b})`,
     accentSoft: `rgb(${soft.r} ${soft.g} ${soft.b})`,
@@ -78,64 +85,136 @@ function colorBucketKey({ r, g, b }: RGB) {
   ].join(':')
 }
 
+function relativeLuminance({ r, g, b }: RGB) {
+  const channel = (value: number) => {
+    const normalized = value / 255
+    return normalized <= 0.03928 ? normalized / 12.92 : ((normalized + 0.055) / 1.055) ** 2.4
+  }
+  return channel(r) * 0.2126 + channel(g) * 0.7152 + channel(b) * 0.0722
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, value))
+}
+
+function colorDistance(first: RGB, second: RGB) {
+  const redMean = (first.r + second.r) / 2
+  const red = first.r - second.r
+  const green = first.g - second.g
+  const blue = first.b - second.b
+  return Math.sqrt(
+    (2 + redMean / 256) * red * red + 4 * green * green + (2 + (255 - redMean) / 256) * blue * blue,
+  )
+}
+
 export function extractThemeColor(image: HTMLImageElement): ThemeColor | null {
   const canvas = document.createElement('canvas')
-  canvas.width = 48
-  canvas.height = 48
+  canvas.width = 72
+  canvas.height = 72
   const context = canvas.getContext('2d', { willReadFrequently: true })
   if (!context) return null
 
   try {
     context.drawImage(image, 0, 0, canvas.width, canvas.height)
     const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data
-    const palette = new Map<string, { color: RGB, count: number, saturation: number, lightness: number }>()
+    const palette = new Map<
+      string,
+      {
+        color: RGB
+        count: number
+        saturation: number
+        lightness: number
+        luminance: number
+        weight: number
+      }
+    >()
 
     for (let index = 0; index < pixels.length; index += 4) {
       const alpha = pixels[index + 3] ?? 0
       if (alpha < 180) continue
+      const pixelIndex = index / 4
+      const x = pixelIndex % canvas.width
+      const y = Math.floor(pixelIndex / canvas.width)
       const color = {
         r: pixels[index] ?? 0,
         g: pixels[index + 1] ?? 0,
         b: pixels[index + 2] ?? 0,
       }
       const { saturation, lightness } = rgbToHsl(color)
-      if (lightness < 0.16 || lightness > 0.9 || saturation < 0.12) continue
+      const luminance = relativeLuminance(color)
+      if (lightness < 0.12 || lightness > 0.88 || saturation < 0.08) continue
+
+      const centerX = Math.abs((x + 0.5) / canvas.width - 0.5) * 2
+      const centerY = Math.abs((y + 0.5) / canvas.height - 0.5) * 2
+      const centerWeight = 1 - clamp((centerX * centerX + centerY * centerY) / 1.7, 0, 0.58)
+      const lightnessWeight = 1 - clamp(Math.abs(lightness - 0.48) / 0.42, 0, 0.78)
+      const saturationWeight = clamp(saturation, 0.16, 0.68)
+      const luminanceWeight = 1 - clamp(Math.abs(luminance - 0.28) / 0.34, 0, 0.72)
+      const weight =
+        centerWeight *
+        (0.48 + lightnessWeight * 0.52) *
+        (0.54 + saturationWeight * 0.78) *
+        (0.64 + luminanceWeight * 0.36)
 
       const key = colorBucketKey(color)
       const bucket = palette.get(key)
       if (bucket) {
-        bucket.color.r += color.r
-        bucket.color.g += color.g
-        bucket.color.b += color.b
+        bucket.color.r += color.r * weight
+        bucket.color.g += color.g * weight
+        bucket.color.b += color.b * weight
         bucket.count += 1
         bucket.saturation += saturation
         bucket.lightness += lightness
+        bucket.luminance += luminance
+        bucket.weight += weight
       } else {
         palette.set(key, {
-          color: { ...color },
+          color: { r: color.r * weight, g: color.g * weight, b: color.b * weight },
           count: 1,
           saturation,
           lightness,
+          luminance,
+          weight,
         })
       }
     }
 
     let best: RGB | null = null
     let bestScore = -1
-    const total = [...palette.values()].reduce((sum, bucket) => sum + bucket.count, 0)
+    const buckets = [...palette.values()]
+    const totalWeight = buckets.reduce((sum, bucket) => sum + bucket.weight, 0)
+    const average = buckets.reduce<RGB>(
+      (sum, bucket) => ({
+        r: sum.r + bucket.color.r,
+        g: sum.g + bucket.color.g,
+        b: sum.b + bucket.color.b,
+      }),
+      { r: 0, g: 0, b: 0 },
+    )
+    if (totalWeight) {
+      average.r /= totalWeight
+      average.g /= totalWeight
+      average.b /= totalWeight
+    }
 
-    for (const bucket of palette.values()) {
+    for (const bucket of buckets) {
+      if (!bucket.weight) continue
       const color = {
-        r: Math.round(bucket.color.r / bucket.count),
-        g: Math.round(bucket.color.g / bucket.count),
-        b: Math.round(bucket.color.b / bucket.count),
+        r: Math.round(bucket.color.r / bucket.weight),
+        g: Math.round(bucket.color.g / bucket.weight),
+        b: Math.round(bucket.color.b / bucket.weight),
       }
       const saturation = bucket.saturation / bucket.count
       const lightness = bucket.lightness / bucket.count
-      const coverage = total ? bucket.count / total : 0
-      const score = Math.sqrt(coverage) * 2.2
-        + Math.min(saturation, 0.72) * 0.85
-        + (1 - Math.abs(lightness - 0.5)) * 0.65
+      const luminance = bucket.luminance / bucket.count
+      const coverage = totalWeight ? bucket.weight / totalWeight : 0
+      const distinctness = totalWeight ? clamp(colorDistance(color, average) / 180, 0, 1) : 0
+      const score =
+        Math.sqrt(coverage) * 1.7 +
+        Math.min(saturation, 0.7) * 0.95 +
+        (1 - Math.abs(lightness - 0.48)) * 0.72 +
+        (1 - Math.abs(luminance - 0.28)) * 0.42 +
+        distinctness * 0.26
       if (score > bestScore) {
         best = color
         bestScore = score

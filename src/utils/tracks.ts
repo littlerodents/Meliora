@@ -20,7 +20,8 @@ export function filterTracks(tracks: Track[], query: string): Track[] {
   const keyword = normalize(query)
   if (!keyword) return tracks
   return tracks.filter(
-    (track) => normalize(track.title).includes(keyword) || normalize(track.artist).includes(keyword),
+    (track) =>
+      normalize(track.title).includes(keyword) || normalize(track.artist).includes(keyword),
   )
 }
 

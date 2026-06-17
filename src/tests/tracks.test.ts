@@ -21,7 +21,12 @@ const tracks: Track[] = [
 
 describe('track utilities', () => {
   it('deduplicates normalized title and artist while preserving first occurrence', () => {
-    const duplicate: Track = { ...tracks[0]!, id: '3', title: ' ECHOES  IN THE SKY ', artist: 'abloom' }
+    const duplicate: Track = {
+      ...tracks[0]!,
+      id: '3',
+      title: ' ECHOES  IN THE SKY ',
+      artist: 'abloom',
+    }
     expect(deduplicateTracks([...tracks, duplicate]).map((track) => track.id)).toEqual(['1', '2'])
   })
 
@@ -33,10 +38,12 @@ describe('track utilities', () => {
 
   it('rejects incomplete Meting entries', () => {
     expect(mapMetingTrack({ title: 'Missing URL' }, 'source', 0)).toBeNull()
-    expect(mapMetingTrack({ title: 'Song', author: '', url: '/audio' }, 'source', 1)).toMatchObject({
-      title: 'Song',
-      artist: '未知艺术家',
-      kind: 'meting',
-    })
+    expect(mapMetingTrack({ title: 'Song', author: '', url: '/audio' }, 'source', 1)).toMatchObject(
+      {
+        title: 'Song',
+        artist: '未知艺术家',
+        kind: 'meting',
+      },
+    )
   })
 })

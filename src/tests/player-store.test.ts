@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
-import { usePlayerStore } from '../stores/player'
-import type { Track } from '../types/music'
+import { migrateSettings, usePlayerStore } from '../stores/player'
+import type { PlayerSettings, Track } from '../types/music'
 
 const tracks: Track[] = [
   {
@@ -75,5 +75,52 @@ describe('player store', () => {
 
     expect(store.currentTrack).toBe(activeTrack)
     expect(store.currentTrackId).toBe('2')
+  })
+})
+
+describe('player settings migration', () => {
+  beforeEach(() => setActivePinia(createPinia()))
+
+  it('defaultSettings has settingsVersion 1', () => {
+    const result = migrateSettings({})
+    expect(result.settingsVersion).toBe(1)
+    expect(result.volume).toBe(0.72)
+    expect(result.playMode).toBe('loop')
+    expect(result.smoothTrackChange).toBe(true)
+    expect(result.autoHideChrome).toBe(true)
+  })
+
+  it('migrates legacy settings without settingsVersion to version 1 while preserving user preferences', () => {
+    const legacy: Partial<PlayerSettings> = {
+      volume: 0.3,
+      playMode: 'shuffle',
+      backgroundBlur: 50,
+      lyricFontSize: 24,
+    }
+    const result = migrateSettings(legacy)
+
+    expect(result.settingsVersion).toBe(1)
+    expect(result.volume).toBe(0.3)
+    expect(result.playMode).toBe('shuffle')
+    expect(result.backgroundBlur).toBe(50)
+    expect(result.lyricFontSize).toBe(24)
+    expect(result.smoothTrackChange).toBe(true)
+    expect(result.autoHideChrome).toBe(true)
+  })
+
+  it('keeps settingsVersion when already at current version', () => {
+    const result = migrateSettings({ settingsVersion: 1, volume: 0.5 })
+    expect(result.settingsVersion).toBe(1)
+    expect(result.volume).toBe(0.5)
+  })
+
+  it('loadSettings migrates persisted legacy data via the store', () => {
+    localStorage.setItem('meliora:settings', JSON.stringify({ volume: 0.4, playMode: 'single' }))
+    const store = usePlayerStore()
+
+    expect(store.settings.settingsVersion).toBe(1)
+    expect(store.settings.volume).toBe(0.4)
+    expect(store.settings.playMode).toBe('single')
+    expect(store.settings.autoHideChrome).toBe(true)
   })
 })

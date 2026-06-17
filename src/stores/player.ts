@@ -1,9 +1,12 @@
 import { computed, ref, watch } from 'vue'
 import { defineStore } from 'pinia'
 import type { PlayMode, PlayerSettings, Track } from '../types/music'
+import { safeStorage } from '../utils/storage'
 
 const SETTINGS_KEY = 'meliora:settings'
 const LAST_TRACK_KEY = 'meliora:last-track'
+
+const CURRENT_SETTINGS_VERSION = 1
 
 const defaultSettings: PlayerSettings = {
   volume: 0.72,
@@ -18,12 +21,19 @@ const defaultSettings: PlayerSettings = {
   lyricAnimation: true,
   skipOnError: true,
   autoHideChrome: true,
+  settingsVersion: CURRENT_SETTINGS_VERSION,
+}
+
+export function migrateSettings(saved: Partial<PlayerSettings>): PlayerSettings {
+  const result: PlayerSettings = { ...defaultSettings, ...saved }
+  result.settingsVersion = CURRENT_SETTINGS_VERSION
+  return result
 }
 
 function loadSettings(): PlayerSettings {
   try {
-    const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}') as Partial<PlayerSettings>
-    return { ...defaultSettings, ...saved }
+    const saved = JSON.parse(safeStorage.getItem(SETTINGS_KEY) || '{}') as Partial<PlayerSettings>
+    return migrateSettings(saved)
   } catch {
     return { ...defaultSettings }
   }
@@ -32,7 +42,8 @@ function loadSettings(): PlayerSettings {
 export const usePlayerStore = defineStore('player', () => {
   const tracks = ref<Track[]>([])
   const queue = ref<Track[]>([])
-  const currentTrackId = ref<string | null>(localStorage.getItem(LAST_TRACK_KEY))
+  const queueVersion = ref(0)
+  const currentTrackId = ref<string | null>(safeStorage.getItem(LAST_TRACK_KEY))
   const isPlaying = ref(false)
   const currentTime = ref(0)
   const duration = ref(0)
@@ -46,6 +57,10 @@ export const usePlayerStore = defineStore('player', () => {
     queue.value.findIndex((track) => track.id === currentTrackId.value),
   )
 
+  function bumpQueueVersion() {
+    queueVersion.value += 1
+  }
+
   function setTracks(nextTracks: Track[]) {
     const activeTrack = currentTrackId.value
       ? tracks.value.find((track) => track.id === currentTrackId.value)
@@ -53,7 +68,10 @@ export const usePlayerStore = defineStore('player', () => {
     tracks.value = activeTrack
       ? nextTracks.map((track) => (track.id === activeTrack.id ? activeTrack : track))
       : nextTracks
-    if (!queue.value.length) queue.value = [...nextTracks]
+    if (!queue.value.length) {
+      queue.value = [...nextTracks]
+      bumpQueueVersion()
+    }
     if (currentTrackId.value && !nextTracks.some((track) => track.id === currentTrackId.value)) {
       currentTrackId.value = null
     }
@@ -61,6 +79,7 @@ export const usePlayerStore = defineStore('player', () => {
 
   function selectTrack(track: Track, sourceQueue: Track[] = tracks.value) {
     queue.value = [...sourceQueue]
+    bumpQueueVersion()
     currentTrackId.value = track.id
     currentTime.value = 0
     duration.value = 0
@@ -69,7 +88,8 @@ export const usePlayerStore = defineStore('player', () => {
 
   function nextTrack(manual = false, preferredTrackId?: string): Track | null {
     if (!queue.value.length) return null
-    if (settings.value.playMode === 'single' && !manual && currentTrack.value) return currentTrack.value
+    if (settings.value.playMode === 'single' && !manual && currentTrack.value)
+      return currentTrack.value
 
     let nextIndex: number
     const preferredIndex = preferredTrackId
@@ -111,19 +131,27 @@ export const usePlayerStore = defineStore('player', () => {
     settings.value.playMode = modes[(index + 1) % modes.length] ?? 'loop'
   }
 
+  let saveSettingsTimer = 0
+  function persistSettings() {
+    safeStorage.setItem(SETTINGS_KEY, JSON.stringify(settings.value))
+  }
   watch(
     settings,
-    (value) => localStorage.setItem(SETTINGS_KEY, JSON.stringify(value)),
+    () => {
+      if (saveSettingsTimer) window.clearTimeout(saveSettingsTimer)
+      saveSettingsTimer = window.setTimeout(persistSettings, 200)
+    },
     { deep: true },
   )
   watch(currentTrackId, (value) => {
-    if (value) localStorage.setItem(LAST_TRACK_KEY, value)
-    else localStorage.removeItem(LAST_TRACK_KEY)
+    if (value) safeStorage.setItem(LAST_TRACK_KEY, value)
+    else safeStorage.removeItem(LAST_TRACK_KEY)
   })
 
   return {
     tracks,
     queue,
+    queueVersion,
     currentTrackId,
     currentTrack,
     currentIndex,

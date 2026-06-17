@@ -5,10 +5,20 @@ interface BeforeInstallPromptEvent extends Event {
   userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform: string }>
 }
 
+const DISPLAY_MODE_QUERY =
+  '(display-mode: standalone), (display-mode: minimal-ui), (display-mode: window-controls-overlay)'
+
+function detectInstalled(): boolean {
+  if (window.matchMedia(DISPLAY_MODE_QUERY).matches) return true
+  const nav = navigator as unknown as { standalone?: boolean }
+  return nav.standalone === true
+}
+
 export function usePwaInstall() {
   const canInstall = ref(false)
-  const isInstalled = ref(window.matchMedia('(display-mode: standalone)').matches)
+  const isInstalled = ref(detectInstalled())
   let deferredPrompt: BeforeInstallPromptEvent | null = null
+  let mql: MediaQueryList | null = null
 
   function handleInstallPrompt(event: Event) {
     event.preventDefault()
@@ -20,6 +30,10 @@ export function usePwaInstall() {
     deferredPrompt = null
     canInstall.value = false
     isInstalled.value = true
+  }
+
+  function handleDisplayModeChange() {
+    isInstalled.value = detectInstalled()
   }
 
   async function install() {
@@ -34,10 +48,13 @@ export function usePwaInstall() {
   }
 
   onMounted(() => {
+    mql = window.matchMedia(DISPLAY_MODE_QUERY)
+    mql.addEventListener('change', handleDisplayModeChange)
     window.addEventListener('beforeinstallprompt', handleInstallPrompt)
     window.addEventListener('appinstalled', handleInstalled)
   })
   onBeforeUnmount(() => {
+    mql?.removeEventListener('change', handleDisplayModeChange)
     window.removeEventListener('beforeinstallprompt', handleInstallPrompt)
     window.removeEventListener('appinstalled', handleInstalled)
   })

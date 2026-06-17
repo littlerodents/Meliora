@@ -1,83 +1,117 @@
 <script setup lang="ts">
-import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import type { ComponentPublicInstance } from 'vue'
-import { ListMusic, Music, Play, RefreshCw, Search, Shuffle, X } from '@lucide/vue'
-import type { Track } from '../types/music'
-import { splitDisplayTitle } from '../utils/title'
+  import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+  import type { ComponentPublicInstance } from 'vue'
+  import { ListMusic, Music, RefreshCw, Search, X } from '@lucide/vue'
+  import type { Track } from '../types/music'
+  import { splitDisplayTitle } from '../utils/title'
+  import { useCoverCache } from '../composables/useCoverCache'
 
-const props = defineProps<{
-  tracks: Track[]
-  total: number
-  currentTrackId: string | null
-  isPlaying: boolean
-  loading: boolean
-  query: string
-}>()
+  const props = defineProps<{
+    tracks: Track[]
+    total: number
+    currentTrackId: string | null
+    isPlaying: boolean
+    loading: boolean
+    query: string
+    spectrumLevels: number[]
+  }>()
 
-const emit = defineEmits<{
-  'update:query': [value: string]
-  select: [track: Track]
-  playAll: []
-  shuffle: []
-  reload: []
-}>()
+  const emit = defineEmits<{
+    'update:query': [value: string]
+    select: [track: Track]
+    reload: []
+  }>()
 
-const loadedCovers = ref(new Set<string>())
-const failedCovers = ref(new Set<string>())
-const isScrolling = ref(false)
-const trackList = ref<HTMLElement | null>(null)
-const activeTrackElement = ref<HTMLElement | null>(null)
-const focusPulseTrackId = ref<string | null>(null)
-let scrollTimer = 0
-let focusTimer = 0
+  const { loadedCovers, failedCovers, markCoverLoaded, markCoverFailed } = useCoverCache()
+  const isScrolling = ref(false)
+  const ITEM_HEIGHT = 66
+  const BUFFER_COUNT = 5
 
-function markCoverLoaded(trackId: string) {
-  loadedCovers.value = new Set(loadedCovers.value).add(trackId)
-}
+  const scrollTop = ref(0)
+  const containerRef = ref<HTMLElement | null>(null)
+  const activeTrackElement = ref<HTMLElement | null>(null)
+  const focusPulseTrackId = ref<string | null>(null)
+  let scrollTimer = 0
+  let focusTimer = 0
 
-function markCoverFailed(trackId: string) {
-  failedCovers.value = new Set(failedCovers.value).add(trackId)
-}
+  const displayList = computed(() =>
+    props.tracks.map((track, index) => ({ track, display: splitDisplayTitle(track.title), index })),
+  )
 
-function handleListScroll() {
-  isScrolling.value = true
-  window.clearTimeout(scrollTimer)
-  scrollTimer = window.setTimeout(() => {
-    isScrolling.value = false
-  }, 850)
-}
-
-function bindActiveTrackElement(trackId: string, element: Element | ComponentPublicInstance | null) {
-  if (trackId !== props.currentTrackId) return
-  activeTrackElement.value = element instanceof HTMLElement ? element : null
-}
-
-async function scrollActiveTrackIntoView(animate = true) {
-  if (!props.currentTrackId) return
-  await nextTick()
-  const scroller = trackList.value
-  const activeElement = activeTrackElement.value
-  if (!scroller || !activeElement) return
-
-  const targetTop = activeElement.offsetTop - (scroller.clientHeight - activeElement.offsetHeight) / 2
-  scroller.scrollTo({
-    top: Math.max(0, targetTop),
-    behavior: animate ? 'smooth' : 'auto',
+  const virtualItems = computed(() => {
+    const containerHeight = containerRef.value?.clientHeight ?? 600
+    const total = displayList.value.length
+    const start = Math.max(0, Math.floor(scrollTop.value / ITEM_HEIGHT) - BUFFER_COUNT)
+    const visibleCount = Math.ceil(containerHeight / ITEM_HEIGHT) + BUFFER_COUNT * 2
+    const end = Math.min(total, start + visibleCount)
+    const topOffset = start * ITEM_HEIGHT
+    const bottomOffset = Math.max(0, (total - end) * ITEM_HEIGHT)
+    return {
+      items: displayList.value.slice(start, end).map((item, i) => ({
+        ...item,
+        offset: (start + i) * ITEM_HEIGHT,
+      })),
+      topOffset,
+      bottomOffset,
+      total,
+    }
   })
-  focusPulseTrackId.value = props.currentTrackId
-  window.clearTimeout(focusTimer)
-  focusTimer = window.setTimeout(() => {
-    if (focusPulseTrackId.value === props.currentTrackId) focusPulseTrackId.value = null
-  }, 1200)
-}
 
-onMounted(() => void scrollActiveTrackIntoView(false))
-watch(() => props.currentTrackId, () => void scrollActiveTrackIntoView())
-watch(() => props.tracks.map((track) => track.id).join('|'), () => void scrollActiveTrackIntoView(false))
-onBeforeUnmount(() => {
-  window.clearTimeout(scrollTimer)
-  window.clearTimeout(focusTimer)
-})
+  function handleScroll(e: Event) {
+    const target = e.target as HTMLElement
+    scrollTop.value = target.scrollTop
+    isScrolling.value = true
+    window.clearTimeout(scrollTimer)
+    scrollTimer = window.setTimeout(() => {
+      isScrolling.value = false
+    }, 850)
+  }
+
+  function bindActiveTrackElement(
+    trackId: string,
+    element: Element | ComponentPublicInstance | null,
+  ) {
+    if (trackId !== props.currentTrackId) return
+    activeTrackElement.value = element instanceof HTMLElement ? element : null
+  }
+
+  async function scrollActiveTrackIntoView(animate = true) {
+    if (!props.currentTrackId) return
+    await nextTick()
+    const container = containerRef.value
+    if (!container) return
+
+    const targetIndex = displayList.value.findIndex(
+      (item) => item.track.id === props.currentTrackId,
+    )
+    if (targetIndex < 0) return
+
+    const targetOffset = targetIndex * ITEM_HEIGHT
+    const focusOffset = 30
+    container.scrollTo({
+      top: targetOffset - focusOffset,
+      behavior: animate ? 'smooth' : 'auto',
+    })
+    focusPulseTrackId.value = props.currentTrackId
+    window.clearTimeout(focusTimer)
+    focusTimer = window.setTimeout(() => {
+      if (focusPulseTrackId.value === props.currentTrackId) focusPulseTrackId.value = null
+    }, 1200)
+  }
+
+  onMounted(() => void scrollActiveTrackIntoView(false))
+  watch(
+    () => props.currentTrackId,
+    () => void scrollActiveTrackIntoView(),
+  )
+  watch(
+    () => props.tracks.map((track) => track.id).join('|'),
+    () => void scrollActiveTrackIntoView(false),
+  )
+  onBeforeUnmount(() => {
+    window.clearTimeout(scrollTimer)
+    window.clearTimeout(focusTimer)
+  })
 </script>
 
 <template>
@@ -99,26 +133,37 @@ onBeforeUnmount(() => {
             placeholder="搜索"
             @input="emit('update:query', ($event.target as HTMLInputElement).value)"
           />
-          <button v-if="query" aria-label="清空搜索" @click="emit('update:query', '')"><X :size="14" /></button>
+          <button v-if="query" aria-label="清空搜索" @click="emit('update:query', '')">
+            <X :size="14" />
+          </button>
         </label>
-        <button class="reload-button" aria-label="重新加载歌曲" title="重新加载歌曲" :disabled="loading" @click="emit('reload')">
+        <button
+          class="reload-button"
+          aria-label="重新加载歌曲"
+          title="重新加载歌曲"
+          :disabled="loading"
+          @click="emit('reload')"
+        >
           <RefreshCw :size="16" :class="{ spinning: loading }" />
         </button>
       </div>
-
-      <div class="list-actions">
-        <button :disabled="!tracks.length" @click="emit('playAll')"><Play :size="15" fill="currentColor" />播放</button>
-        <button :disabled="!tracks.length" @click="emit('shuffle')"><Shuffle :size="15" />随机播放</button>
-      </div>
     </div>
 
-    <div ref="trackList" class="track-list" :class="{ scrolling: isScrolling }" @scroll.passive="handleListScroll">
+    <div
+      ref="containerRef"
+      class="track-list"
+      :class="{ scrolling: isScrolling }"
+      @scroll.passive="handleScroll"
+    >
+      <div :style="{ height: `${virtualItems.topOffset}px` }" />
+
       <button
-        v-for="(track, index) in tracks"
+        v-for="{ track, display, index, offset } in virtualItems.items"
         :key="track.id"
-        :ref="(element) => bindActiveTrackElement(track.id, element)"
+        :ref="(el) => bindActiveTrackElement(track.id, el)"
         class="track-item"
         :class="{ active: track.id === currentTrackId, focused: track.id === focusPulseTrackId }"
+        :style="{ position: 'absolute', top: `${offset}px`, left: '0', right: '0' }"
         @click="emit('select', track)"
       >
         <span class="thumb" :class="{ loaded: loadedCovers.has(track.id) }">
@@ -134,16 +179,9 @@ onBeforeUnmount(() => {
         </span>
         <span class="track-copy">
           <strong>
-            <span class="track-title-main">{{ splitDisplayTitle(track.title).title }}</span>
-            <span
-              v-if="splitDisplayTitle(track.title).versions.length"
-              class="track-title-versions"
-            >
-              <span
-                v-for="version in splitDisplayTitle(track.title).versions"
-                :key="version"
-                class="track-title-version"
-              >
+            <span class="track-title-main">{{ display.title }}</span>
+            <span v-if="display.versions.length" class="track-title-versions">
+              <span v-for="version in display.versions" :key="version" class="track-title-version">
                 {{ version }}
               </span>
             </span>
@@ -151,14 +189,24 @@ onBeforeUnmount(() => {
           <small>{{ track.artist }}</small>
         </span>
         <span class="track-status">
-          <span v-if="track.id === currentTrackId && isPlaying" class="equalizer"><i /><i /><i /></span>
+          <span
+            v-if="track.id === currentTrackId && isPlaying"
+            class="spectrum-meter"
+            aria-label="正在播放"
+          >
+            <i
+              v-for="(level, band) in spectrumLevels"
+              :key="band"
+              :style="{ '--spectrum-level': `${Math.max(0.08, Math.min(1, level)) * 100}%` }"
+            />
+          </span>
           <span v-else>{{ index + 1 }}</span>
         </span>
       </button>
 
-      <div v-if="loading && !total" class="list-state">
-        <span class="loader" />正在载入音乐
-      </div>
+      <div :style="{ height: `${virtualItems.bottomOffset}px` }" />
+
+      <div v-if="loading && !total" class="list-state"><span class="loader" />正在载入音乐</div>
       <div v-else-if="!tracks.length" class="list-state">
         <ListMusic :size="25" />{{ query ? '没有找到匹配的歌曲' : '暂无歌曲' }}
       </div>
@@ -167,413 +215,499 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped lang="scss">
-.track-panel {
-  display: flex;
-  min-width: 0;
-  height: 100%;
-  flex-direction: column;
-  padding: 24px 18px 16px;
-  color: var(--text);
-}
-
-.track-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0 5px 17px;
-
-  h2 {
-    margin: 0;
-    color: #fff;
-    font-size: 1.18rem;
-    font-weight: 700;
-    letter-spacing: -0.035em;
-  }
-
-  p {
-    margin: 4px 0 0;
-    color: var(--text-subtle);
-    font-size: 0.72rem;
-  }
-}
-
-.reload-button {
-  display: grid;
-  width: 36px;
-  height: 36px;
-  flex: 0 0 auto;
-  place-items: center;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 14px;
-  corner-shape: squircle;
-  background: rgba(255, 255, 255, 0.055);
-  backdrop-filter: blur(18px) saturate(145%);
-  color: var(--text-subtle);
-  cursor: pointer;
-
-  &:hover { background: rgba(255, 255, 255, 0.13); color: #fff; }
-  &:disabled { cursor: wait; opacity: 0.55; }
-}
-
-.list-toolbar {
-  position: sticky;
-  top: 0;
-  z-index: 2;
-  margin: 0 -4px;
-  padding: 0 4px 6px;
-  background: transparent;
-}
-
-.search-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 0 5px;
-}
-
-.search-box {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-  flex: 1;
-  padding: 0 11px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 15px;
-  corner-shape: squircle;
-  background: rgba(255, 255, 255, 0.05);
-  backdrop-filter: blur(18px) saturate(145%);
-  color: var(--text-subtle);
-
-  input {
-    min-width: 0;
-    height: 36px;
-    flex: 1;
-    border: 0;
-    outline: 0;
-    background: none;
-    color: #fff;
-    font-size: 0.78rem;
-
-    &::placeholder { color: var(--text-subtle); }
-    &::-webkit-search-cancel-button { display: none; }
-  }
-
-  button {
-    display: grid;
-    padding: 3px;
-    border: 0;
-    background: none;
-    color: var(--text-subtle);
-    cursor: pointer;
-  }
-}
-
-.list-actions {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 9px;
-  padding: 12px 5px 10px;
-
-  button {
-    display: flex;
-    height: 36px;
-    align-items: center;
-    justify-content: center;
-    gap: 6px;
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    border-radius: 14px;
-    corner-shape: squircle;
-    background: rgba(255, 255, 255, 0.045);
-    backdrop-filter: blur(18px) saturate(145%);
-    color: var(--accent);
-    font-size: 0.72rem;
-    font-weight: 600;
-    cursor: pointer;
-
-    &:hover:not(:disabled) { background: rgba(255, 255, 255, 0.14); }
-    &:disabled { opacity: 0.35; }
-  }
-}
-
-.track-list {
-  min-height: 0;
-  flex: 1;
-  overflow-y: auto;
-  padding-bottom: 18px;
-  scrollbar-color: transparent transparent;
-  scrollbar-width: thin;
-  mask-image: linear-gradient(
-    180deg,
-    transparent 0,
-    #000 24px,
-    #000 calc(100% - 34px),
-    transparent 100%
-  );
-  transition: scrollbar-color 180ms ease;
-
-  &.scrolling {
-    scrollbar-color: rgba(255, 255, 255, 0.24) transparent;
-  }
-
-  &::-webkit-scrollbar {
-    width: 5px;
-  }
-
-  &::-webkit-scrollbar-track {
-    background: transparent;
-  }
-
-  &::-webkit-scrollbar-thumb {
-    border-radius: 99px;
-    background: transparent;
-  }
-
-  &.scrolling::-webkit-scrollbar-thumb {
-    background: rgba(255, 255, 255, 0.24);
-  }
-}
-
-.track-item {
-  display: grid;
-  width: 100%;
-  grid-template-columns: 46px minmax(0, 1fr) 28px;
-  align-items: center;
-  gap: 11px;
-  padding: 6px;
-  border: 0;
-  border-radius: 14px;
-  corner-shape: squircle;
-  background: transparent;
-  color: var(--text);
-  text-align: left;
-  cursor: pointer;
-  transition: background 130ms ease;
-
-  &:hover { background: rgba(255, 255, 255, 0.07); }
-
-  &.active {
-    background: color-mix(in srgb, var(--accent) 17%, transparent);
-
-    .track-copy strong,
-    .track-status { color: var(--accent); }
-
-    .track-title-version {
-      color: color-mix(in srgb, var(--accent) 68%, rgba(255, 255, 255, 0.52));
-    }
-  }
-
-  &.focused {
-    animation: focus-glow 1.15s ease both;
-  }
-}
-
-.thumb {
-  position: relative;
-  display: grid;
-  width: 46px;
-  height: 46px;
-  place-items: center;
-  overflow: hidden;
-  border-radius: 11px;
-  corner-shape: squircle;
-  background: #2c2c2e;
-  color: rgba(255, 255, 255, 0.26);
-  font-size: 0.8rem;
-  font-weight: 700;
-
-  img {
-    position: relative;
-    z-index: 1;
-    width: 100%;
-    height: 100%;
-    object-fit: cover;
-    opacity: 0;
-    transition: opacity 220ms ease;
-  }
-
-  &.loaded img { opacity: 1; }
-}
-
-.cover-placeholder {
-  position: absolute;
-  inset: 0;
-  display: grid;
-  place-items: center;
-  background:
-    radial-gradient(circle at 32% 22%, rgba(255, 255, 255, 0.07), transparent 42%),
-    #2c2c2e;
-}
-
-.track-copy {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: 3px;
-
-  strong,
-  small {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  strong {
-    display: flex;
-    max-width: 100%;
-    align-items: baseline;
-    gap: 6px;
-    min-width: 0;
-    color: rgba(255, 255, 255, 0.93);
-    font-size: 0.78rem;
-    font-weight: 560;
-  }
-
-  .track-title-main {
-    min-width: 0;
-    flex: 0 1 auto;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .track-title-versions {
-    display: inline-flex;
-    max-width: 118px;
-    flex: 0 999 118px;
-    align-items: baseline;
-    gap: 6px;
-    min-width: 0;
-    overflow: hidden;
-    white-space: nowrap;
-    mask-image: linear-gradient(90deg, #000 0, #000 calc(100% - 24px), transparent);
-  }
-
-  .track-title-version {
-    display: inline-block;
-    flex: 0 0 auto;
-    color: rgba(255, 255, 255, 0.62);
-    font-size: 0.78em;
-    font-weight: 620;
-    line-height: 1;
-    white-space: nowrap;
-  }
-
-  small { color: var(--text-subtle); font-size: 0.66rem; }
-}
-
-.track-status {
-  color: rgba(255, 255, 255, 0.25);
-  font-size: 0.64rem;
-  text-align: center;
-}
-
-.equalizer {
-  display: flex;
-  height: 13px;
-  align-items: flex-end;
-  justify-content: center;
-  gap: 2px;
-
-  i {
-    width: 2px;
-    border-radius: 2px;
-    background: currentColor;
-    animation: equalize 0.75s ease-in-out infinite alternate;
-    &:nth-child(1) { height: 45%; }
-    &:nth-child(2) { height: 100%; animation-delay: -0.25s; }
-    &:nth-child(3) { height: 65%; animation-delay: -0.45s; }
-  }
-}
-
-.list-state {
-  display: flex;
-  min-height: 180px;
-  align-items: center;
-  justify-content: center;
-  flex-direction: column;
-  gap: 10px;
-  color: var(--text-subtle);
-  font-size: 0.76rem;
-}
-
-.loader {
-  width: 22px;
-  height: 22px;
-  border: 2px solid rgba(255, 255, 255, 0.13);
-  border-top-color: var(--accent);
-  border-radius: 50%;
-  animation: spin 0.8s linear infinite;
-}
-
-.spinning { animation: spin 0.8s linear infinite; }
-@keyframes spin { to { transform: rotate(360deg); } }
-@keyframes equalize { to { height: 20%; } }
-@keyframes focus-glow {
-  0% { background: color-mix(in srgb, var(--accent) 28%, transparent); transform: scale(0.992); }
-  45% { background: color-mix(in srgb, var(--accent) 22%, transparent); transform: scale(1); }
-  100% { background: color-mix(in srgb, var(--accent) 14%, transparent); transform: scale(1); }
-}
-
-@media (max-width: 720px) {
   .track-panel {
-    padding:
-      max(22px, env(safe-area-inset-top))
-      14px
-      max(14px, env(safe-area-inset-bottom));
+    display: flex;
+    min-width: 0;
+    height: 100%;
+    flex-direction: column;
+    padding: 24px 18px 16px;
+    color: var(--text);
   }
 
   .track-header {
-    padding: 3px 7px 18px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 5px 17px;
 
-    h2 { font-size: 1.42rem; }
-    p { margin-top: 5px; font-size: 0.75rem; }
-  }
+    h2 {
+      margin: 0;
+      color: #fff;
+      font-size: 1.18rem;
+      font-weight: 700;
+      letter-spacing: -0.035em;
+    }
 
-  .search-row { margin: 0 4px; }
-
-  .search-box {
-    height: 42px;
-    border-radius: 17px;
-
-    input {
-      height: 40px;
-      font-size: 0.82rem;
+    p {
+      margin: 4px 0 0;
+      color: var(--text-subtle);
+      font-size: 0.72rem;
     }
   }
 
   .reload-button {
-    width: 42px;
-    height: 42px;
-    border-radius: 17px;
+    display: grid;
+    width: 36px;
+    height: 36px;
+    flex: 0 0 auto;
+    place-items: center;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 14px;
+    corner-shape: squircle;
+    background: rgba(255, 255, 255, 0.055);
+    backdrop-filter: blur(18px) saturate(145%);
+    color: var(--text-subtle);
+    cursor: pointer;
+
+    &:hover {
+      background: rgba(255, 255, 255, 0.13);
+      color: #fff;
+    }
+    &:disabled {
+      cursor: wait;
+      opacity: 0.55;
+    }
   }
 
-  .list-actions {
-    padding: 12px 4px 10px;
+  .list-toolbar {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    margin: 0 -4px;
+    padding: 0 4px 6px;
+    background: transparent;
+  }
+
+  .search-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0 5px;
+  }
+
+  .search-box {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    flex: 1;
+    padding: 0 11px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 15px;
+    corner-shape: squircle;
+    background: rgba(255, 255, 255, 0.05);
+    backdrop-filter: blur(18px) saturate(145%);
+    color: var(--text-subtle);
+
+    input {
+      min-width: 0;
+      height: 36px;
+      flex: 1;
+      border: 0;
+      outline: 0;
+      background: none;
+      color: #fff;
+      font-size: 0.78rem;
+
+      &::placeholder {
+        color: var(--text-subtle);
+      }
+      &::-webkit-search-cancel-button {
+        display: none;
+      }
+    }
 
     button {
-      height: 40px;
-      border-radius: 16px;
-      font-size: 0.76rem;
+      display: grid;
+      padding: 3px;
+      border: 0;
+      background: none;
+      color: var(--text-subtle);
+      cursor: pointer;
+    }
+  }
+
+  .track-list {
+    --track-focus-offset: 30px;
+    position: relative;
+    min-height: 0;
+    flex: 1;
+    overflow-y: auto;
+    scroll-padding-top: var(--track-focus-offset);
+    padding-top: 10px;
+    padding-bottom: 18px;
+    scrollbar-color: transparent transparent;
+    scrollbar-width: thin;
+    mask-image: linear-gradient(
+      180deg,
+      transparent 0,
+      #000 24px,
+      #000 calc(100% - 34px),
+      transparent 100%
+    );
+    transition: scrollbar-color 180ms ease;
+
+    &.scrolling {
+      scrollbar-color: rgba(255, 255, 255, 0.24) transparent;
+    }
+
+    &::-webkit-scrollbar {
+      width: 5px;
+    }
+
+    &::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    &::-webkit-scrollbar-thumb {
+      border-radius: 99px;
+      background: transparent;
+    }
+
+    &.scrolling::-webkit-scrollbar-thumb {
+      background: rgba(255, 255, 255, 0.24);
     }
   }
 
   .track-item {
-    grid-template-columns: 50px minmax(0, 1fr) 25px;
+    display: grid;
+    width: 100%;
+    grid-template-columns: 46px minmax(0, 1fr) 28px;
+    align-items: center;
     gap: 11px;
-    padding: 6px 5px;
-    border-radius: 16px;
+    padding: 6px;
+    border: 0;
+    border-radius: 14px;
+    corner-shape: squircle;
+    background: transparent;
+    color: var(--text);
+    text-align: left;
+    cursor: pointer;
+    transition: background 130ms ease;
+
+    &:hover {
+      background: rgba(255, 255, 255, 0.07);
+    }
+
+    &.active {
+      background: color-mix(in srgb, var(--accent) 17%, transparent);
+
+      .track-copy strong,
+      .track-status {
+        color: var(--accent);
+      }
+
+      .track-title-version {
+        color: color-mix(in srgb, var(--accent) 68%, rgba(255, 255, 255, 0.52));
+      }
+    }
+
+    &.focused {
+      animation: focus-glow 1.15s ease both;
+    }
   }
 
   .thumb {
-    width: 50px;
-    height: 50px;
-    border-radius: 13px;
+    position: relative;
+    display: grid;
+    width: 46px;
+    height: 46px;
+    place-items: center;
+    overflow: hidden;
+    border-radius: 11px;
+    corner-shape: squircle;
+    background: #2c2c2e;
+    color: rgba(255, 255, 255, 0.26);
+    font-size: 0.8rem;
+    font-weight: 700;
+
+    img {
+      position: relative;
+      z-index: 1;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      opacity: 0;
+      transition: opacity 220ms ease;
+    }
+
+    &.loaded img {
+      opacity: 1;
+    }
+  }
+
+  .cover-placeholder {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    background:
+      radial-gradient(circle at 32% 22%, rgba(255, 255, 255, 0.07), transparent 42%), #2c2c2e;
   }
 
   .track-copy {
-    strong { font-size: 0.82rem; }
-    small { font-size: 0.69rem; }
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 3px;
+
+    strong,
+    small {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    strong {
+      display: flex;
+      max-width: 100%;
+      align-items: baseline;
+      gap: 6px;
+      min-width: 0;
+      color: rgba(255, 255, 255, 0.93);
+      font-size: 0.78rem;
+      font-weight: 560;
+    }
+
+    .track-title-main {
+      min-width: 0;
+      flex: 0 1 auto;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .track-title-versions {
+      display: inline-flex;
+      max-width: 118px;
+      flex: 0 999 118px;
+      align-items: baseline;
+      gap: 6px;
+      min-width: 0;
+      overflow: hidden;
+      white-space: nowrap;
+      mask-image: linear-gradient(90deg, #000 0, #000 calc(100% - 24px), transparent);
+    }
+
+    .track-title-version {
+      display: inline-block;
+      flex: 0 0 auto;
+      color: rgba(255, 255, 255, 0.62);
+      font-size: 0.78em;
+      font-weight: 620;
+      line-height: 1;
+      white-space: nowrap;
+    }
+
+    small {
+      color: var(--text-subtle);
+      font-size: 0.66rem;
+    }
   }
-}
+
+  .track-status {
+    color: rgba(255, 255, 255, 0.25);
+    font-size: 0.64rem;
+    text-align: center;
+  }
+
+  .spectrum-meter {
+    display: flex;
+    height: 13px;
+    align-items: flex-end;
+    justify-content: center;
+    gap: 2.5px;
+
+    i {
+      width: 2px;
+      height: var(--spectrum-level);
+      min-height: 3px;
+      max-height: 13px;
+      border-radius: 2px;
+      background: currentColor;
+      opacity: 0.92;
+      transition: height 80ms linear;
+    }
+  }
+
+  .list-state {
+    display: flex;
+    min-height: 180px;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    gap: 10px;
+    color: var(--text-subtle);
+    font-size: 0.76rem;
+  }
+
+  .loader {
+    width: 22px;
+    height: 22px;
+    border: 2px solid rgba(255, 255, 255, 0.13);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+
+  .spinning {
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+  @keyframes focus-glow {
+    0% {
+      background: color-mix(in srgb, var(--accent) 28%, transparent);
+      transform: scale(0.992);
+    }
+    45% {
+      background: color-mix(in srgb, var(--accent) 22%, transparent);
+      transform: scale(1);
+    }
+    100% {
+      background: color-mix(in srgb, var(--accent) 14%, transparent);
+      transform: scale(1);
+    }
+  }
+
+  @media (max-width: 720px) {
+    .track-panel {
+      padding: 18px 13px max(16px, env(safe-area-inset-bottom));
+    }
+
+    .track-header {
+      padding: 2px 6px 13px;
+
+      h2 {
+        font-size: 1.22rem;
+      }
+      p {
+        margin-top: 4px;
+        font-size: 0.68rem;
+      }
+    }
+
+    .list-toolbar {
+      padding-bottom: 3px;
+    }
+
+    .search-row {
+      margin: 0 4px;
+    }
+
+    .search-box {
+      height: 40px;
+      border-radius: 16px;
+
+      input {
+        height: 38px;
+        font-size: 0.78rem;
+      }
+    }
+
+    .reload-button {
+      width: 40px;
+      height: 40px;
+      border-radius: 16px;
+    }
+
+    .track-list {
+      --track-focus-offset: 24px;
+      padding-top: 8px;
+      padding-bottom: max(18px, env(safe-area-inset-bottom));
+      mask-image: linear-gradient(
+        180deg,
+        transparent 0,
+        #000 18px,
+        #000 calc(100% - 24px),
+        transparent 100%
+      );
+    }
+
+    .track-item {
+      grid-template-columns: 46px minmax(0, 1fr) 23px;
+      gap: 10px;
+      padding: 5px 4px;
+      border-radius: 15px;
+    }
+
+    .thumb {
+      width: 46px;
+      height: 46px;
+      border-radius: 12px;
+    }
+
+    .track-copy {
+      strong {
+        font-size: 0.78rem;
+      }
+      small {
+        font-size: 0.66rem;
+      }
+    }
+  }
+
+  @media (max-width: 360px), (max-height: 700px) and (max-width: 720px) {
+    .track-panel {
+      padding: 14px 10px max(12px, env(safe-area-inset-bottom));
+    }
+
+    .track-header {
+      padding-bottom: 10px;
+
+      h2 {
+        font-size: 1.08rem;
+      }
+      p {
+        font-size: 0.62rem;
+      }
+    }
+
+    .search-box {
+      height: 36px;
+      border-radius: 14px;
+
+      input {
+        height: 34px;
+        font-size: 0.74rem;
+      }
+    }
+
+    .reload-button {
+      width: 36px;
+      height: 36px;
+      border-radius: 14px;
+    }
+
+    .track-list {
+      --track-focus-offset: 20px;
+      padding-top: 7px;
+    }
+
+    .track-item {
+      grid-template-columns: 42px minmax(0, 1fr) 22px;
+      gap: 9px;
+      padding: 4px;
+    }
+
+    .thumb {
+      width: 42px;
+      height: 42px;
+      border-radius: 11px;
+    }
+
+    .track-copy {
+      gap: 2px;
+
+      strong {
+        font-size: 0.74rem;
+      }
+      small {
+        font-size: 0.62rem;
+      }
+    }
+  }
 </style>

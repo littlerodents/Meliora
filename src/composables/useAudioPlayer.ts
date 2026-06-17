@@ -1,18 +1,19 @@
-import { onBeforeUnmount, ref, watch } from 'vue'
+import { onBeforeUnmount, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { usePlayerStore } from '../stores/player'
-import { loadLyricsText } from '../services/lyrics'
 import type { Track } from '../types/music'
+import { useBeatAnalyser } from './useBeatAnalyser'
+import {
+  usePreloadPool,
+  preloadCover,
+  preloadLyrics,
+  type PreloadDirection,
+  type PreloadSlot,
+} from './usePreloadPool'
 
 const CROSSFADE_DURATION = 650
-type PreloadDirection = 'previous' | 'next'
-
-interface PreloadSlot {
-  audio: HTMLAudioElement
-  direction: PreloadDirection
-  ready: Promise<boolean> | null
-  track: Track | null
-}
+const FADE_OUT_DURATION = 180
+const FADE_IN_DURATION = 360
 
 function createAudio(preload: HTMLMediaElement['preload']) {
   const audio = new Audio()
@@ -21,182 +22,62 @@ function createAudio(preload: HTMLMediaElement['preload']) {
   return audio
 }
 
+function clamp(value: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, value))
+}
+
 export function useAudioPlayer() {
   const store = usePlayerStore()
   const { currentTrack, isPlaying, currentTime, duration, settings } = storeToRefs(store)
   const players = [createAudio('metadata'), createAudio('auto'), createAudio('auto')] as const
   let activeAudio = players[0]
-  const preloadSlots: Record<PreloadDirection, PreloadSlot> = {
-    previous: {
-      audio: players[1],
-      direction: 'previous',
-      ready: null,
-      track: null,
-    },
-    next: {
-      audio: players[2],
-      direction: 'next',
-      ready: null,
-      track: null,
-    },
-  }
-  const beatLevel = ref(0)
-  const preloadMessage = ref('')
-  const failedTrackIds = new Set<string>()
   let transitionInProgress = false
   let automaticCrossfadeStarted = false
-  let audioContext: AudioContext | null = null
-  let analyser: AnalyserNode | null = null
-  let frequencyData: Uint8Array<ArrayBuffer> | null = null
-  let beatFrame = 0
-  let energyFloor = 0.08
   let volumeAnimation = 0
+  let switchRequestId = 0
+  // 当 active audio 还没有有效 duration 时，记录用户请求的 seek 时间，
+  // 等到 durationchange / loadedmetadata 后再真正写入 audio.currentTime。
+  let pendingSeekTime: number | null = null
 
-  function findCachedTrack(direction: PreloadDirection): Track | null {
-    const track = preloadSlots[direction].track
-    if (!track || track.id === currentTrack.value?.id || failedTrackIds.has(track.id)) return null
-    return track
-  }
+  const { beatLevel, spectrumLevels, startBeatAnalysis, stopBeatAnalysis } = useBeatAnalyser({
+    players,
+    getActiveAudio: () => activeAudio,
+    isPlaying,
+  })
 
-  function predictTrack(direction: PreloadDirection, manual = false): Track | null {
-    const queue = store.queue
-    if (!queue.length) return null
-    if (direction === 'next' && settings.value.playMode === 'single' && !manual) return currentTrack.value
-
-    const cachedTrack = findCachedTrack(direction)
-    if (cachedTrack) return cachedTrack
-
-    if (direction === 'next' && settings.value.playMode === 'shuffle' && queue.length > 1) {
-      const candidates = queue.filter(
-        (track) => track.id !== currentTrack.value?.id && !failedTrackIds.has(track.id),
-      )
-      return candidates[Math.floor(Math.random() * candidates.length)] ?? null
-    }
-
-    for (let offset = 1; offset <= queue.length; offset += 1) {
-      const index = direction === 'next'
-        ? store.currentIndex + offset
-        : store.currentIndex - offset
-      if (settings.value.playMode === 'sequence' && (index >= queue.length || index < 0)) return null
-      const track = queue[(index + queue.length) % queue.length]
-      if (track && !failedTrackIds.has(track.id)) return track
-    }
-    return null
-  }
-
-  function predictNextTrack(manual = false): Track | null {
-    return predictTrack('next', manual)
-  }
-
-  function predictPreviousTrack(): Track | null {
-    return predictTrack('previous', true)
-  }
-
-  function preloadCover(url?: string) {
-    if (!url) return Promise.resolve()
-    const image = new Image()
-    image.src = url
-    return image.decode?.().catch(() => undefined) ?? Promise.resolve()
-  }
-
-  async function preloadLyrics(url?: string) {
-    if (!url) return
-    try {
-      await loadLyricsText(url)
-    } catch {
-      // Lyrics failure must not block audio playback.
-    }
-  }
-
-  function clearSlot(slot: PreloadSlot) {
-    slot.track = null
-    slot.ready = null
-    slot.audio.pause()
-    slot.audio.removeAttribute('src')
-    slot.audio.load()
-  }
-
-  function clearPreloads() {
-    clearSlot(preloadSlots.previous)
-    clearSlot(preloadSlots.next)
-  }
-
-  function findSlotByTrack(track: Track): PreloadSlot | null {
-    return Object.values(preloadSlots).find((slot) => slot.track?.id === track.id) ?? null
-  }
-
-  function loadSlot(direction: PreloadDirection, track: Track): Promise<boolean> {
-    const slot = preloadSlots[direction]
-    if (slot.track?.id === track.id && slot.ready) return slot.ready
-
-    const duplicateSlot = findSlotByTrack(track)
-    if (duplicateSlot && duplicateSlot !== slot) clearSlot(duplicateSlot)
-
-    clearSlot(slot)
-    slot.track = track
-    slot.audio.volume = 0
-    slot.ready = new Promise<boolean>((resolve) => {
-      const cleanup = () => {
-        slot.audio.removeEventListener('canplay', handleReady)
-        slot.audio.removeEventListener('loadeddata', handleReady)
-        slot.audio.removeEventListener('error', handleError)
-      }
-      const handleReady = () => {
-        cleanup()
-        resolve(true)
-      }
-      const handleError = () => {
-        cleanup()
-        failedTrackIds.add(track.id)
-        preloadMessage.value = `已跳过暂时无法播放的歌曲，正在继续播放`
-        slot.track = null
-        slot.ready = null
-        resolve(false)
-        scheduleAdjacentPreload()
-      }
-      slot.audio.addEventListener('canplay', handleReady, { once: true })
-      slot.audio.addEventListener('loadeddata', handleReady, { once: true })
-      slot.audio.addEventListener('error', handleError, { once: true })
-    })
-    slot.audio.src = track.audioUrl
-    slot.audio.load()
-    void preloadCover(track.cover)
-    void preloadLyrics(track.lyricsUrl)
-    return slot.ready
-  }
-
-  function preloadAdjacentTracks() {
-    if (!settings.value.preloadNextTrack || transitionInProgress) return
-    const previousTrack = predictPreviousTrack()
-    const nextTrack = predictNextTrack()
-    if (previousTrack && previousTrack.id !== currentTrack.value?.id) {
-      void loadSlot('previous', previousTrack)
-    } else {
-      clearSlot(preloadSlots.previous)
-    }
-    if (nextTrack && nextTrack.id !== currentTrack.value?.id) {
-      void loadSlot('next', nextTrack)
-    } else {
-      clearSlot(preloadSlots.next)
-    }
-  }
-
-  function scheduleAdjacentPreload() {
-    window.setTimeout(preloadAdjacentTracks, 0)
-  }
+  const {
+    preloadSlots,
+    preloadMessage,
+    failedTrackIds,
+    predictNextTrack,
+    clearPreloads,
+    clearSlot,
+    findSlotByTrack,
+    slotCanStart,
+    loadSlot,
+    scheduleAdjacentPreload,
+  } = usePreloadPool({
+    players,
+    store,
+    settings,
+    getActiveAudio: () => activeAudio,
+    transitionInProgress: () => transitionInProgress,
+  })
 
   function setPlayerVolume(audio: HTMLAudioElement, gain: number) {
     audio.volume = Math.max(0, Math.min(1, settings.value.volume * gain))
   }
 
-  function crossfadePlayers(oldAudio: HTMLAudioElement, newAudio: HTMLAudioElement) {
+  function audioGain(audio: HTMLAudioElement) {
+    return settings.value.volume > 0 ? clamp(audio.volume / settings.value.volume, 0, 1) : 1
+  }
+
+  function animateGain(updaters: Array<(eased: number) => void>, duration: number): Promise<void> {
     const animationId = ++volumeAnimation
     const startedAt = performance.now()
     return new Promise<void>((resolve) => {
-      const finish = () => {
-        setPlayerVolume(oldAudio, 0)
-        setPlayerVolume(newAudio, 1)
-        resolve()
+      function applyAll(eased: number) {
+        for (const update of updaters) update(eased)
       }
 
       function step(now: number) {
@@ -204,79 +85,50 @@ export function useAudioPlayer() {
           resolve()
           return
         }
-        const progress = Math.min(1, (now - startedAt) / CROSSFADE_DURATION)
-        const eased = progress * progress * (3 - 2 * progress)
-        setPlayerVolume(oldAudio, 1 - eased)
-        setPlayerVolume(newAudio, eased)
-        if (progress >= 1) {
-          finish()
+        const raw = Math.min(1, (now - startedAt) / duration)
+        const eased = raw * raw * (3 - 2 * raw)
+        applyAll(eased)
+        if (raw >= 1) {
+          resolve()
           return
         }
-
         if (document.hidden) {
-          window.setTimeout(() => step(performance.now()), 32)
+          applyAll(1)
+          resolve()
           return
         }
-
         window.requestAnimationFrame(step)
       }
 
       if (document.hidden) {
-        window.setTimeout(() => step(performance.now()), 0)
+        applyAll(1)
+        resolve()
         return
       }
-
       window.requestAnimationFrame(step)
     })
   }
 
-  function stopBeatAnalysis() {
-    window.cancelAnimationFrame(beatFrame)
-    beatFrame = 0
-    beatLevel.value = 0
+  function crossfadePlayers(oldAudio: HTMLAudioElement, newAudio: HTMLAudioElement) {
+    return animateGain(
+      [
+        (eased) => setPlayerVolume(oldAudio, 1 - eased),
+        (eased) => setPlayerVolume(newAudio, eased),
+      ],
+      CROSSFADE_DURATION,
+    ).then(() => {
+      setPlayerVolume(oldAudio, 0)
+      setPlayerVolume(newAudio, 1)
+    })
   }
 
-  function updateBeatLevel() {
-    if (!analyser || !frequencyData || activeAudio.paused) {
-      beatLevel.value *= 0.88
-      if (beatLevel.value > 0.005) beatFrame = window.requestAnimationFrame(updateBeatLevel)
-      else stopBeatAnalysis()
-      return
-    }
-    analyser.getByteFrequencyData(frequencyData)
-    const bassBins = Math.max(4, Math.min(18, Math.floor(frequencyData.length * 0.07)))
-    let energy = 0
-    for (let index = 1; index < bassBins; index += 1) {
-      const value = frequencyData[index] ?? 0
-      energy += value * value
-    }
-    energy = Math.sqrt(energy / Math.max(1, bassBins - 1)) / 255
-    energyFloor = energyFloor * 0.975 + energy * 0.025
-    const pulse = Math.max(0, Math.min(1, (energy - energyFloor * 0.82) * 3.6))
-    beatLevel.value += (pulse - beatLevel.value) * (pulse > beatLevel.value ? 0.42 : 0.09)
-    beatFrame = window.requestAnimationFrame(updateBeatLevel)
-  }
-
-  async function startBeatAnalysis() {
-    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
-    try {
-      if (!audioContext) {
-        audioContext = new AudioContext()
-        analyser = audioContext.createAnalyser()
-        analyser.fftSize = 256
-        analyser.smoothingTimeConstant = 0.58
-        players.forEach((audio) => {
-          const source = audioContext!.createMediaElementSource(audio)
-          source.connect(analyser!)
-        })
-        analyser.connect(audioContext.destination)
-        frequencyData = new Uint8Array(analyser.frequencyBinCount)
-      }
-      if (audioContext.state === 'suspended') await audioContext.resume()
-      if (!beatFrame) beatFrame = window.requestAnimationFrame(updateBeatLevel)
-    } catch {
-      stopBeatAnalysis()
-    }
+  function fadePlayer(audio: HTMLAudioElement, fromGain: number, toGain: number, duration: number) {
+    return animateGain(
+      [(eased) => setPlayerVolume(audio, fromGain + (toGain - fromGain) * eased)],
+      duration,
+    ).then(() => {
+      setPlayerVolume(audio, toGain)
+    })
   }
 
   function syncMediaSession() {
@@ -289,6 +141,21 @@ export function useAudioPlayer() {
       artwork: track.cover ? [{ src: track.cover }] : [],
     })
     navigator.mediaSession.playbackState = isPlaying.value ? 'playing' : 'paused'
+  }
+
+  function describePlaybackError(error: unknown, audio: HTMLAudioElement) {
+    const reason = error as DOMException
+    if (reason.name === 'AbortError') return ''
+    if (reason.name === 'NotAllowedError') return '浏览器阻止了播放，请再次点击播放'
+
+    if (!audio.currentSrc && !audio.src) return '当前歌曲没有可用的音频地址'
+    if (audio.error?.code === MediaError.MEDIA_ERR_NETWORK)
+      return '当前歌曲音频加载失败，请稍后再试'
+    if (audio.error?.code === MediaError.MEDIA_ERR_DECODE) return '浏览器无法解码当前音频'
+    if (audio.error?.code === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED)
+      return '当前歌曲音频源暂时不可用或格式不支持'
+    if (reason.name === 'NotSupportedError') return '当前歌曲音频源暂时不可用或格式不支持'
+    return '当前歌曲无法播放，请稍后再试'
   }
 
   async function play() {
@@ -306,10 +173,7 @@ export function useAudioPlayer() {
       void startBeatAnalysis()
     } catch (error) {
       isPlaying.value = false
-      const reason = error as DOMException
-      if (reason.name === 'NotAllowedError') store.errorMessage = '浏览器阻止了播放，请再次点击播放'
-      else if (reason.name === 'NotSupportedError') store.errorMessage = '浏览器无法解码当前音频'
-      else if (reason.name !== 'AbortError') store.errorMessage = '当前歌曲无法播放，请稍后再试'
+      store.errorMessage = describePlaybackError(error, activeAudio)
     }
   }
 
@@ -328,24 +192,45 @@ export function useAudioPlayer() {
 
   function seek(time: number) {
     if (!Number.isFinite(time)) return
-    activeAudio.currentTime = Math.max(0, Math.min(time, duration.value || time))
+    const safeTime = Math.max(0, time)
+    // 当 active audio 还没有有效 duration 时，写入 currentTime 不会生效。
+    // 把目标时间记录到 pendingSeekTime，等 metadata 就绪后再 flush，
+    // 同时立即把 UI 的 currentTime 同步过去，避免进度条跳回原位。
+    if (!Number.isFinite(activeAudio.duration) || activeAudio.duration === 0) {
+      pendingSeekTime = safeTime
+      currentTime.value = safeTime
+      return
+    }
+    activeAudio.currentTime = Math.max(0, Math.min(safeTime, activeAudio.duration || safeTime))
     currentTime.value = activeAudio.currentTime
+    pendingSeekTime = null
   }
 
-  function commitActiveAudio(track: Track, queue: Track[]) {
+  // 当 audio 的 duration 终于可用时，把之前记下的 pendingSeekTime 真正写入。
+  function flushPendingSeek(audio: HTMLAudioElement) {
+    if (audio !== activeAudio) return
+    if (pendingSeekTime == null) return
+    if (!Number.isFinite(audio.duration) || audio.duration <= 0) return
+    const target = clamp(pendingSeekTime, 0, audio.duration)
+    audio.currentTime = target
+    currentTime.value = target
+    pendingSeekTime = null
+  }
+
+  function commitActiveAudio(track: Track, queue: Track[], gain = 1) {
     volumeAnimation += 1
     transitionInProgress = false
     automaticCrossfadeStarted = false
-    setPlayerVolume(activeAudio, 1)
+    setPlayerVolume(activeAudio, gain)
     store.selectTrack(track, queue)
     currentTime.value = activeAudio.currentTime
     duration.value = Number.isFinite(activeAudio.duration) ? activeAudio.duration : 0
     syncMediaSession()
   }
 
-  async function playActiveAudio() {
+  async function playActiveAudio(gain = 1) {
     try {
-      setPlayerVolume(activeAudio, 1)
+      setPlayerVolume(activeAudio, gain)
       await activeAudio.play()
       isPlaying.value = true
       store.errorMessage = ''
@@ -354,10 +239,7 @@ export function useAudioPlayer() {
       return true
     } catch (error) {
       isPlaying.value = false
-      const reason = error as DOMException
-      if (reason.name === 'NotAllowedError') store.errorMessage = '浏览器阻止了播放，请再次点击播放'
-      else if (reason.name === 'NotSupportedError') store.errorMessage = '浏览器无法解码当前音频'
-      else if (reason.name !== 'AbortError') store.errorMessage = '当前歌曲无法播放，请稍后再试'
+      store.errorMessage = describePlaybackError(error, activeAudio)
       return false
     }
   }
@@ -384,16 +266,45 @@ export function useAudioPlayer() {
     updateStore: () => void,
     shouldPlay: boolean,
     direction: PreloadDirection,
+    waitForReady: boolean,
   ): Promise<boolean> {
     if (transitionInProgress) return false
     transitionInProgress = true
+    const requestId = ++switchRequestId
     const wasPlaying = isPlaying.value
     const useCrossfade = settings.value.smoothTrackChange && wasPlaying && shouldPlay
+    const shouldSequentialFade = useCrossfade && !waitForReady
     const slot = findSlotByTrack(track) ?? preloadSlots[direction]
-    const ready = slot.track?.id === track.id
-      ? await (slot.ready ?? Promise.resolve(true))
-      : await loadSlot(direction, track)
-    if (!ready) {
+    if (waitForReady) {
+      const ready =
+        slot.track?.id === track.id
+          ? await (slot.ready ?? Promise.resolve(slotCanStart(slot, track)))
+          : await loadSlot(direction, track)
+      if (!ready || requestId !== switchRequestId) {
+        if (!ready) {
+          failedTrackIds.add(track.id)
+          if (shouldPlay && settings.value.skipOnError && queue.length > 1) {
+            preloadMessage.value = `已跳过暂时无法播放的歌曲，正在继续播放`
+            window.setTimeout(() => void next(false), 80)
+          }
+        }
+        transitionInProgress = false
+        return false
+      }
+    } else if (slot.track?.id !== track.id || !slot.audio.src) {
+      clearSlot(slot)
+      slot.track = track
+      slot.ready = null
+      slot.audio.volume = 0
+      slot.audio.src = track.audioUrl
+      slot.audio.load()
+      void preloadCover(track.cover)
+      void preloadLyrics(track.lyricsUrl)
+    }
+
+    const oldGain = audioGain(activeAudio)
+    if (shouldSequentialFade) await fadePlayer(activeAudio, oldGain, 0, FADE_OUT_DURATION)
+    if (requestId !== switchRequestId) {
       transitionInProgress = false
       return false
     }
@@ -401,11 +312,17 @@ export function useAudioPlayer() {
     const { oldAudio, newAudio } = replaceActiveWithSlot(slot, direction)
     newAudio.currentTime = 0
     setPlayerVolume(newAudio, useCrossfade ? 0 : 1)
+    // 切歌后上一次 seek 的 pending 时间不应被新歌沿用
+    pendingSeekTime = null
 
     try {
-      if (shouldPlay) await newAudio.play()
       updateStore()
-      if (useCrossfade) await crossfadePlayers(oldAudio, newAudio)
+      currentTime.value = 0
+      duration.value = Number.isFinite(activeAudio.duration) ? activeAudio.duration : 0
+      syncMediaSession()
+      if (shouldPlay) await newAudio.play()
+      if (useCrossfade && waitForReady) await crossfadePlayers(oldAudio, newAudio)
+      else if (useCrossfade) await fadePlayer(newAudio, 0, 1, FADE_IN_DURATION)
       oldAudio.pause()
       oldAudio.currentTime = 0
       oldAudio.volume = 0
@@ -415,6 +332,7 @@ export function useAudioPlayer() {
       automaticCrossfadeStarted = false
       syncMediaSession()
       transitionInProgress = false
+      pendingSeekTime = null
       scheduleAdjacentPreload()
       return true
     } catch {
@@ -427,19 +345,27 @@ export function useAudioPlayer() {
       reverseSlot.track = null
       reverseSlot.ready = null
       clearSlot(reverseSlot)
+      // 异常路径同样需要重置标志，否则后续任何切歌都会被 transitionInProgress 拒绝。
       transitionInProgress = false
+      automaticCrossfadeStarted = false
+      pendingSeekTime = null
       window.setTimeout(() => void next(false), 0)
       return false
     }
-    void queue
   }
 
   async function selectAndPlay(track: Track, queue: Track[]) {
     if (transitionInProgress) return
     transitionInProgress = true
-    activeAudio.pause()
+    ++switchRequestId
+    // 直接选中新曲目时，上一次 seek 的 pending 时间不应被新歌沿用。
+    pendingSeekTime = null
+    const wasPlaying = isPlaying.value
+    const useSmoothSwitch = settings.value.smoothTrackChange && wasPlaying
+    if (useSmoothSwitch) await fadePlayer(activeAudio, audioGain(activeAudio), 0, FADE_OUT_DURATION)
+    else activeAudio.pause()
     const slot = findSlotByTrack(track)
-    if (slot) {
+    if (slot && slotCanStart(slot, track)) {
       const oldAudio = activeAudio
       const newAudio = slot.audio
       activeAudio = newAudio
@@ -450,6 +376,7 @@ export function useAudioPlayer() {
       oldAudio.currentTime = 0
       oldAudio.volume = 0
     } else {
+      if (slot) clearSlot(slot)
       clearPreloads()
       activeAudio.src = track.audioUrl
       activeAudio.load()
@@ -457,8 +384,10 @@ export function useAudioPlayer() {
       void preloadLyrics(track.lyricsUrl)
     }
     activeAudio.currentTime = 0
-    commitActiveAudio(track, queue)
-    const played = await playActiveAudio()
+    setPlayerVolume(activeAudio, useSmoothSwitch ? 0 : 1)
+    commitActiveAudio(track, queue, useSmoothSwitch ? 0 : 1)
+    const played = await playActiveAudio(useSmoothSwitch ? 0 : 1)
+    if (played && useSmoothSwitch) await fadePlayer(activeAudio, 0, 1, FADE_IN_DURATION)
     if (!played && settings.value.skipOnError && queue.length > 1) {
       failedTrackIds.add(track.id)
       window.setTimeout(() => void next(false), 80)
@@ -472,9 +401,16 @@ export function useAudioPlayer() {
       seek(0)
       return
     }
-    await switchToTrack(track, store.queue, () => {
-      store.nextTrack(manual, track.id)
-    }, isPlaying.value, 'next')
+    await switchToTrack(
+      track,
+      store.queue,
+      () => {
+        store.nextTrack(manual, track.id)
+      },
+      isPlaying.value,
+      'next',
+      !manual,
+    )
   }
 
   async function previous() {
@@ -498,6 +434,7 @@ export function useAudioPlayer() {
         () => store.previousTrack(track.id),
         isPlaying.value,
         'previous',
+        false,
       )
       if (switched) return
     }
@@ -512,6 +449,8 @@ export function useAudioPlayer() {
       activeAudio.src = track.audioUrl
       activeAudio.load()
       automaticCrossfadeStarted = false
+      // 切换到全新音频源时旧的 pending seek 时间也要丢弃
+      pendingSeekTime = null
       syncMediaSession()
       scheduleAdjacentPreload()
       if (previousTrack && isPlaying.value) void play()
@@ -535,7 +474,7 @@ export function useAudioPlayer() {
     },
   )
   watch(
-    () => store.queue.map((track) => track.id).join('|'),
+    () => store.queueVersion,
     () => {
       failedTrackIds.clear()
       clearPreloads()
@@ -550,10 +489,10 @@ export function useAudioPlayer() {
     if (Number.isFinite(audio.duration) && audio.duration > 0) {
       const remaining = audio.duration - audio.currentTime
       if (
-        settings.value.smoothTrackChange
-        && preloadSlots.next.track
-        && !automaticCrossfadeStarted
-        && remaining <= CROSSFADE_DURATION / 1000
+        settings.value.smoothTrackChange &&
+        preloadSlots.next.track &&
+        !automaticCrossfadeStarted &&
+        remaining <= CROSSFADE_DURATION / 1000
       ) {
         automaticCrossfadeStarted = true
         void next(false)
@@ -572,35 +511,68 @@ export function useAudioPlayer() {
     }
   }
 
-  players.forEach((audio) => {
-    audio.addEventListener('timeupdate', () => handleTimeUpdate(audio))
-    audio.addEventListener('durationchange', () => {
+  type AudioListenerEntry = {
+    audio: HTMLAudioElement
+    type: string
+    listener: EventListener
+  }
+  const audioListeners: AudioListenerEntry[] = []
+
+  function bindAudioListener(audio: HTMLAudioElement, type: string, listener: EventListener) {
+    audio.addEventListener(type, listener)
+    audioListeners.push({ audio, type, listener })
+  }
+
+  for (const audio of players) {
+    const onTimeUpdate: EventListener = () => handleTimeUpdate(audio)
+    const onDurationChange: EventListener = () => {
       if (audio === activeAudio) {
         duration.value = Number.isFinite(audio.duration) ? audio.duration : 0
+        flushPendingSeek(audio)
         scheduleAdjacentPreload()
       }
-    })
-    audio.addEventListener('canplay', () => {
+    }
+    const onLoadedMetadata: EventListener = () => {
+      if (audio === activeAudio) {
+        duration.value = Number.isFinite(audio.duration) ? audio.duration : 0
+        flushPendingSeek(audio)
+      }
+    }
+    const onCanPlay: EventListener = () => {
       if (audio === activeAudio) scheduleAdjacentPreload()
-    })
-    audio.addEventListener('play', () => {
+    }
+    const onPlay: EventListener = () => {
       if (audio === activeAudio) {
         isPlaying.value = true
         void startBeatAnalysis()
       }
-    })
-    audio.addEventListener('pause', () => {
+    }
+    const onPause: EventListener = () => {
       if (audio === activeAudio && !transitionInProgress) {
         isPlaying.value = false
         stopBeatAnalysis()
       }
-    })
-    audio.addEventListener('ended', () => {
+    }
+    const onEnded: EventListener = () => {
       if (audio === activeAudio && !transitionInProgress) void next(false)
-    })
-    audio.addEventListener('error', () => {
-      if (audio !== activeAudio || transitionInProgress) return
+    }
+    const onError: EventListener = () => {
+      if (audio !== activeAudio) return
       const failedTrack = currentTrack.value
+      // 即便正处于过渡阶段也要记录失败的 trackId，避免静默吞错导致后续无法定位问题。
+      if (transitionInProgress) {
+        if (failedTrack) {
+          failedTrackIds.add(failedTrack.id)
+          console.warn(
+            '[useAudioPlayer] active audio error during transition',
+            failedTrack.id,
+            audio.error,
+          )
+        } else {
+          console.warn('[useAudioPlayer] active audio error during transition', audio.error)
+        }
+        return
+      }
       if (failedTrack) {
         failedTrackIds.add(failedTrack.id)
         preloadMessage.value = `已跳过暂时无法播放的歌曲，正在继续播放`
@@ -609,8 +581,27 @@ export function useAudioPlayer() {
       if (settings.value.skipOnError && store.queue.length > 1) {
         window.setTimeout(() => void next(false), 80)
       }
-    })
-  })
+    }
+
+    bindAudioListener(audio, 'timeupdate', onTimeUpdate)
+    bindAudioListener(audio, 'durationchange', onDurationChange)
+    bindAudioListener(audio, 'loadedmetadata', onLoadedMetadata)
+    bindAudioListener(audio, 'canplay', onCanPlay)
+    bindAudioListener(audio, 'play', onPlay)
+    bindAudioListener(audio, 'pause', onPause)
+    bindAudioListener(audio, 'ended', onEnded)
+    bindAudioListener(audio, 'error', onError)
+  }
+
+  const MEDIA_SESSION_ACTIONS: MediaSessionAction[] = [
+    'play',
+    'pause',
+    'previoustrack',
+    'nexttrack',
+    'seekto',
+    'seekbackward',
+    'seekforward',
+  ]
 
   if ('mediaSession' in navigator) {
     navigator.mediaSession.setActionHandler('play', () => void play())
@@ -630,16 +621,30 @@ export function useAudioPlayer() {
 
   onBeforeUnmount(() => {
     stopBeatAnalysis()
-    void audioContext?.close()
-    players.forEach((audio) => {
+    volumeAnimation += 1
+    for (const { audio, type, listener } of audioListeners) {
+      audio.removeEventListener(type, listener)
+    }
+    audioListeners.length = 0
+    for (const audio of players) {
       audio.pause()
       audio.src = ''
-    })
+    }
+    if ('mediaSession' in navigator) {
+      for (const action of MEDIA_SESSION_ACTIONS) {
+        try {
+          navigator.mediaSession.setActionHandler(action, null)
+        } catch {
+          // 某些浏览器对部分 action 不支持，setActionHandler(action, null) 会抛错，忽略即可。
+        }
+      }
+    }
   })
 
   return {
     audio: activeAudio,
     beatLevel,
+    spectrumLevels,
     preloadMessage,
     play,
     pause,

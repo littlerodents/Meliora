@@ -17,11 +17,18 @@ describe('music service', () => {
     musicConfig.localTracks = [
       { id: 'local', title: 'Local Song', artist: 'Artist', audio: '/music/local.mp3' },
     ]
-    vi.stubGlobal('fetch', vi.fn()
-      .mockResolvedValueOnce(new Response(JSON.stringify([
-        { title: 'Remote Song', author: 'Singer', url: '/remote.mp3' },
-      ]), { status: 200 }))
-      .mockResolvedValueOnce(new Response('failed', { status: 500 })))
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValueOnce(
+          new Response(
+            JSON.stringify([{ title: 'Remote Song', author: 'Singer', url: '/remote.mp3' }]),
+            { status: 200 },
+          ),
+        )
+        .mockResolvedValueOnce(new Response('failed', { status: 500 })),
+    )
 
     const result = await loadConfiguredTracks()
     expect(result.failedSources).toBe(1)

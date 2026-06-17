@@ -18,10 +18,9 @@ describe('parseLyrics', () => {
   })
 
   it('parses extended timestamps with a trailing sequence number', () => {
-    expect(parseLyrics([
-      '[00:00.00-1] 作曲 : KREZUS/KIXIA',
-      '[00:12.35-2]First lyric',
-    ].join('\n'))).toEqual([
+    expect(
+      parseLyrics(['[00:00.00-1] 作曲 : KREZUS/KIXIA', '[00:12.35-2]First lyric'].join('\n')),
+    ).toEqual([
       { time: 0, text: '作曲 : KREZUS/KIXIA' },
       { time: 12.35, text: 'First lyric' },
     ])
@@ -35,16 +34,18 @@ describe('parseLyrics', () => {
   })
 
   it('removes empty brackets, punctuation-only lines, and empty translations', () => {
-    expect(parseLyrics([
-      '[00:01.00]()',
-      '[00:02.00]【 】',
-      '[00:03.00]...',
-      '[00:04.00]Actual lyric ()',
-      '（）',
-      'Plain lyric (translation)',
-    ].join('\n'))).toEqual([
-      { time: 4, text: 'Actual lyric' },
-    ])
+    expect(
+      parseLyrics(
+        [
+          '[00:01.00]()',
+          '[00:02.00]【 】',
+          '[00:03.00]...',
+          '[00:04.00]Actual lyric ()',
+          '（）',
+          'Plain lyric (translation)',
+        ].join('\n'),
+      ),
+    ).toEqual([{ time: 4, text: 'Actual lyric' }])
 
     expect(parseLyrics('()\n……\nPlain lyric (translation)')).toEqual([
       { time: null, text: 'Plain lyric', translation: 'translation' },
@@ -82,22 +83,26 @@ describe('parseLyrics', () => {
   })
 
   it('treats credits plus an instrumental placeholder as unavailable lyrics', () => {
-    const lines = parseLyrics([
-      '[00:00.00]作词：Meliora',
-      '[00:01.00]作曲: Meliora',
-      '[00:02.00]编曲：Meliora',
-      '[00:04.00]纯音乐,请欣赏!',
-    ].join('\n'))
+    const lines = parseLyrics(
+      [
+        '[00:00.00]作词：Meliora',
+        '[00:01.00]作曲: Meliora',
+        '[00:02.00]编曲：Meliora',
+        '[00:04.00]纯音乐,请欣赏!',
+      ].join('\n'),
+    )
 
     expect(hasMeaningfulLyrics(lines)).toBe(false)
   })
 
   it('keeps lyrics available when real lyric content follows the credits', () => {
-    const lines = parseLyrics([
-      '[00:00.00]作词：Meliora',
-      '[00:01.00]作曲：Meliora',
-      '[00:08.00]Hold me close (紧紧拥我入怀)',
-    ].join('\n'))
+    const lines = parseLyrics(
+      [
+        '[00:00.00]作词：Meliora',
+        '[00:01.00]作曲：Meliora',
+        '[00:08.00]Hold me close (紧紧拥我入怀)',
+      ].join('\n'),
+    )
 
     expect(hasMeaningfulLyrics(lines)).toBe(true)
     expect(hasMeaningfulLyrics([])).toBe(false)

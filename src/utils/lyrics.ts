@@ -2,7 +2,8 @@ import type { LyricLine } from '../types/music'
 
 const timestampPattern = /\[(\d{1,3}):(\d{1,2})(?:[.:](\d{1,3}))?(?:-\d+)?\]/g
 const metadataPattern = /^\[(ar|al|ti|by|offset|re|ve):/i
-const creditPattern = /^(?:作词|填词|词|作曲|曲|编曲|制作人|制作|监制|混音|母带|录音|人声|演唱|和声|吉他|贝斯|鼓|弦乐|键盘|钢琴|笛子|二胡|发行|出品|版权|op|sp|lyrics?|lyricist|composer|composed\s+by|arranger|arranged\s+by|producer|produced\s+by|mix(?:ed)?\s+by|master(?:ed)?\s+by|record(?:ed)?\s+by|vocal(?:s)?|written\s+by)\s*[:：]/i
+const creditPattern =
+  /^(?:作词|填词|词|作曲|曲|编曲|制作人|制作|监制|混音|母带|录音|人声|演唱|和声|吉他|贝斯|鼓|弦乐|键盘|钢琴|笛子|二胡|发行|出品|版权|op|sp|lyrics?|lyricist|composer|composed\s+by|arranger|arranged\s+by|producer|produced\s+by|mix(?:ed)?\s+by|master(?:ed)?\s+by|record(?:ed)?\s+by|vocal(?:s)?|written\s+by)\s*[:：]/i
 const roleLabelPattern = /^[\p{Script=Han}a-z\d\s·.&/]{1,12}\s*[:：]$/iu
 const emptyLyricPattern = /^[\s()[\]{}（）【】<>《》"'“”‘’.,，。!！?？、~～…·:：;；_\-—|/\\]*$/u
 
@@ -107,12 +108,14 @@ export function isInstrumentalPlaceholder(value: string): boolean {
   const normalized = normalizeLyricMessage(value)
   if (!normalized) return false
 
-  return normalized === '纯音乐'
-    || (normalized.includes('纯音乐') && normalized.includes('欣赏'))
-    || normalized === 'instrumental'
-    || normalized === '暂无歌词'
-    || normalized === '无歌词'
-    || normalized === '本节目暂无字幕'
+  return (
+    normalized === '纯音乐' ||
+    (normalized.includes('纯音乐') && normalized.includes('欣赏')) ||
+    normalized === 'instrumental' ||
+    normalized === '暂无歌词' ||
+    normalized === '无歌词' ||
+    normalized === '本节目暂无字幕'
+  )
 }
 
 function isCreditLine(line: LyricLine): boolean {

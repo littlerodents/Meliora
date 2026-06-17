@@ -11,12 +11,14 @@ node_modules
 dist
 dist-ssr
 .vercel
+src/generated/
 *.local
 
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
 .idea
+.trae/*
 .DS_Store
 *.suo
 *.ntvs*
@@ -25,3 +27,15 @@ dist-ssr
 *.sw?
 
 .vercel
+
+# Prettier
+.prettiercache
+
+# Husky
+.husky/*
+!.husky/commit-msg
+!.husky/pre-commit
+!.husky/_/
+
+# Coverage
+coverage/

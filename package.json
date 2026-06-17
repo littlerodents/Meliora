@@ -1,17 +1,51 @@
 {
   "name": "meliora",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.1.0",
+  "description": "沉浸式 · 视听一体的网页音乐播放器,基于 Vue 3 + TypeScript + Pinia + SCSS。",
+  "license": "AGPL-3.0-or-later",
+  "author": "abloom25",
+  "homepage": "https://github.com/abloom25/Meliora#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/abloom25/Meliora.git"
+  },
+  "bugs": {
+    "url": "https://github.com/abloom25/Meliora/issues"
+  },
+  "keywords": [
+    "music-player",
+    "vue3",
+    "typescript",
+    "pinia",
+    "pwa",
+    "lyrics",
+    "media-session",
+    "picture-in-picture",
+    "web-audio"
+  ],
+  "engines": {
+    "node": ">=20",
+    "pnpm": ">=8"
+  },
   "packageManager": "pnpm@11.5.3",
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "generate": "node scripts/generate-app-version.mjs",
+    "prebuild": "pnpm generate",
     "build": "vue-tsc -b && vite build",
+    "postbuild": "node scripts/inject-sw-cache-name.mjs",
     "preview": "vite preview",
+    "pretype-check": "pnpm generate",
     "type-check": "vue-tsc --noEmit",
+    "pretest": "pnpm generate",
     "test": "vitest run",
     "test:watch": "vitest",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "prepare": "husky"
   },
   "dependencies": {
     "@lucide/vue": "^1.18.0",
@@ -19,14 +53,22 @@
     "vue": "^3.5.34"
   },
   "devDependencies": {
+    "@commitlint/cli": "^21.0.2",
+    "@commitlint/config-conventional": "^21.0.2",
     "@eslint/js": "^10.0.1",
     "@types/node": "^24.12.3",
     "@vitejs/plugin-vue": "^6.0.6",
     "@vue/test-utils": "^2.4.11",
     "@vue/tsconfig": "^0.9.1",
     "eslint": "^10.5.0",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-prettier": "^5.5.6",
     "eslint-plugin-vue": "^10.9.2",
+    "globals": "^17.6.0",
+    "husky": "^9.1.7",
     "jsdom": "^29.1.1",
+    "lint-staged": "^17.0.7",
+    "prettier": "^3.8.4",
     "sass": "^1.101.0",
     "typescript": "~6.0.2",
     "typescript-eslint": "^8.61.0",
